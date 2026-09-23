@@ -5,15 +5,30 @@ współdzielonymi na żywo między urządzeniami.
 
 ## Poprawki (jeśli wracasz do wcześniej wdrożonego projektu)
 
-Ta wersja naprawia 4 błędy znalezione w testach: cofanie działające tylko
-jeden krok wstecz, podwójny zapis do bazy przy cofaniu w trybie deweloperskim,
-interfejs zależny w 100% od Supabase Realtime (akcje "wisiały" bez żadnego
-komunikatu, gdy Realtime nie działał) i ciche ignorowanie błędów zapisu
-(import CSV zgłaszał sukces nawet gdy wiersz nie zapisał się w bazie).
+**Runda 1** — 4 błędy: cofanie działające tylko jeden krok wstecz, podwójny
+zapis do bazy przy cofaniu w trybie deweloperskim, interfejs zależny w 100%
+od Supabase Realtime (akcje "wisiały" bez żadnego komunikatu, gdy Realtime
+nie działał), ciche ignorowanie błędów zapisu (import CSV zgłaszał sukces
+nawet gdy wiersz nie zapisał się w bazie), a także pole ilości punktów
+niepozwalające się wyczyścić podczas wpisywania nowej wartości i brak
+czytelnego ekranu błędu, gdy brakuje zmiennych środowiskowych.
+
+**Runda 2** — 5 kolejnych: punkty liczone są teraz atomowo po stronie bazy
+(funkcja `apply_points` w `schema.sql`) zamiast w przeglądarce — wcześniej
+dwa prawie-jednoczesne zapisy dla tego samego gracza (np. z dwóch urządzeń)
+mogły się nawzajem nadpisać i jedna zmiana punktowa po prostu znikała; CSV
+poprawnie obsługuje teraz nicki z przecinkiem/cudzysłowem; Enter w polu
+"Szukaj gracza…" dodaje gracza tak jak klik w "+ Dodaj"; panel gracza
+dociąga jego historię bezpośrednio z bazy, więc nie znika po przekroczeniu
+500 zapisanych zmian w całym klubie; przycisk "Cofnij" blokuje się na czas
+trwania cofania i mówi wprost, gdy nie ma czego cofnąć (bo gracz został
+usunięty).
 
 **Jeśli masz już działający projekt Supabase** założony starszą wersją tego
-repo, dolicz też migrację bazy opisaną na górze `supabase/schema.sql` —
-zmienia unikalność nicku z rozróżniającej wielkość liter na nierozróżniającą.
+repo, dolicz migracje opisane na górze `supabase/schema.sql` — zmiana
+unikalności nicku na nierozróżniającą wielkość liter i (ważne!) funkcję
+`apply_points`, bez której punkty nadal będą liczone niebezpiecznie po
+stronie przeglądarki.
 
 ## 1. Załóż projekt w Supabase
 
