@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { supabase } from "./supabaseClient";
+import { supabase, supabaseConfigError } from "./supabaseClient";
 
 const ACCENT = "#22d3ee";
 const ORG_PASSWORD = import.meta.env.VITE_ORG_PASSWORD || "poker2026";
@@ -73,6 +73,11 @@ function rowFromDb(r) {
   };
 }
 
+function resolveAmount(raw) {
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
 function eventFromDb(e) {
   return {
     id: e.id,
@@ -89,6 +94,42 @@ function eventFromDb(e) {
 // case-insensitive index) at nearly the same time.
 function isDuplicateNickError(error) {
   return error?.code === "23505";
+}
+
+// A naive `line.split(",")` breaks on a nick like `"Jan, Kowalski"` (a
+// comma inside a properly CSV-quoted field) — it silently chops the value
+// instead of erroring, so a bad nick and zeroed points slip in as if the
+// import succeeded. These two helpers implement just enough of the CSV
+// quoting rule (RFC 4180) to round-trip nicks containing commas or quotes.
+function csvField(value) {
+  const s = String(value);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function parseCsvLine(line) {
+  const fields = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }
+        else inQuotes = false;
+      } else {
+        cur += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      fields.push(cur);
+      cur = "";
+    } else {
+      cur += c;
+    }
+  }
+  fields.push(cur);
+  return fields;
 }
 
 function Divider({ t }) {
@@ -206,7 +247,9 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
         </button>
         <input
           value={amount}
-          onChange={(e) => setAmount(Math.max(1, Number(e.target.value) || 0))}
+          onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ""))}
+          onBlur={() => { if (amount.trim() === "") setAmount("1"); }}
+          inputMode="numeric"
           style={{ flex: 1, minWidth: 0, boxSizing: "border-box", background: t.inputBg, border: `1px solid ${t.inputBorder}`, borderRadius: 10, color: t.textStrong, fontSize: 18, fontWeight: 800, textAlign: "center", padding: "11px 4px", fontFamily: MONO }}
         />
         <GradientButton onClick={onAdd} disabled={busy} style={{ flex: 1, padding: "11px 0", fontSize: 15 }}>+</GradientButton>
@@ -277,13 +320,16 @@ export default function App() {
   const [loadError, setLoadError] = useState("");
   const [busyId, setBusyId] = useState(null);
   const [mutationError, setMutationError] = useState("");
+  const [undoing, setUndoing] = useState(false);
 
   const [query, setQuery] = useState("");
   const [addError, setAddError] = useState("");
   const [sortBy, setSortBy] = useState("points");
   const [view, setView] = useState("list");
   const [selectedId, setSelectedId] = useState(null);
-  const [amount, setAmount] = useState(10);
+  // Kept as a string while editing so the field can be cleared and retyped
+  // (e.g. "100" -> "300") — see `resolveAmount` for where it becomes a number.
+  const [amount, setAmount] = useState("10");
   const [csvMenuOpen, setCsvMenuOpen] = useState(false);
   const [undoStack, setUndoStack] = useState([]);
   const [importMsg, setImportMsg] = useState("");
@@ -294,6 +340,10 @@ export default function App() {
 
   // ---- initial fetch + realtime subscriptions ----
   useEffect(() => {
+    if (!supabase) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
 
     async function load() {
@@ -335,6 +385,38 @@ export default function App() {
     };
   }, []);
 
+  // The initial load only fetches the 500 most recent point_events across
+  // the WHOLE club (see below), so once a club has racked up more history
+  // than that, a player's own "Historia" panel could look empty even
+  // though older events for them still exist — they just fell outside that
+  // global window. Fetching this player's own latest events directly
+  // whenever their panel opens keeps it accurate regardless of club size.
+  useEffect(() => {
+    if (!supabase || !selectedId || !category) return;
+    let cancelled = false;
+    supabase
+      .from("point_events")
+      .select("*")
+      .eq("player_id", selectedId)
+      .eq("category", category)
+      .order("created_at", { ascending: false })
+      .limit(5)
+      .then(({ data, error }) => {
+        if (cancelled || error || !data) return;
+        setEvents((prev) => {
+          const merged = [...prev];
+          for (const row of data) {
+            const ev = eventFromDb(row);
+            if (!merged.some((e) => e.id === ev.id)) merged.push(ev);
+          }
+          return merged;
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, category]);
+
   useEffect(() => {
     const onDocClick = (e) => {
       if (csvMenuOpen && csvMenuRef.current && !csvMenuRef.current.contains(e.target)) {
@@ -357,13 +439,15 @@ export default function App() {
   const apply = async (player, delta, { recordUndo = true } = {}) => {
     setBusyId(player.id);
     const cat = category;
-    const newVal = Math.max(0, player[cat] + delta);
-    const { data: playerRow, error } = await supabase
-      .from("players")
-      .update({ [cat]: newVal, last_change: new Date().toISOString() })
-      .eq("id", player.id)
-      .select()
-      .single();
+    // Atomic server-side increment via the `apply_points` SQL function
+    // (supabase/schema.sql) — NOT `player[cat] + delta` computed here and
+    // written back, which would let two near-simultaneous writes for the
+    // same player silently overwrite each other.
+    const { data: playerRow, error } = await supabase.rpc("apply_points", {
+      p_player_id: player.id,
+      p_category: cat,
+      p_delta: delta,
+    });
     if (error) {
       setMutationError(`Nie udało się zapisać zmiany punktów: ${error.message}`);
       setBusyId(null);
@@ -387,15 +471,22 @@ export default function App() {
   };
 
   const undo = async () => {
-    if (!undoStack.length) return;
+    if (!undoStack.length || undoing) return;
+    setUndoing(true);
     const entry = undoStack[undoStack.length - 1];
     // Pure pop, no side effects here — safe even if React StrictMode
     // double-invokes this updater in development.
     setUndoStack((prev) => prev.slice(0, -1));
     if (entry.kind === "points") {
       const p = players.find((pl) => pl.id === entry.playerId);
-      if (p) await apply(p, entry.delta, { recordUndo: false });
+      if (p) {
+        setMutationError("");
+        await apply(p, entry.delta, { recordUndo: false });
+      } else {
+        setMutationError("Nie można cofnąć — ten gracz został od tamtej pory usunięty.");
+      }
     }
+    setUndoing(false);
   };
 
   const submitLogin = () => {
@@ -430,7 +521,7 @@ export default function App() {
   };
 
   const exportCsv = () => {
-    const rows = [...players].sort((a, b) => a.nick.localeCompare(b.nick, "pl")).map((p) => `${p.nick},${p[category]}`);
+    const rows = [...players].sort((a, b) => a.nick.localeCompare(b.nick, "pl")).map((p) => `${csvField(p.nick)},${p[category]}`);
     const csv = [`nick,${category}`, ...rows].join("\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
     const a = document.createElement("a");
@@ -456,7 +547,7 @@ export default function App() {
     let updated = 0, added = 0, failed = 0;
     const knownNicks = new Map(players.map((p) => [p.nick.toLowerCase(), p]));
     for (const line of lines) {
-      const [rawNick, rawVal] = line.split(",");
+      const [rawNick, rawVal] = parseCsvLine(line);
       if (!rawNick) continue;
       const nick = rawNick.trim();
       const val = Math.max(0, Number((rawVal || "0").trim()) || 0);
@@ -514,6 +605,20 @@ export default function App() {
   const viewOptions = [
     { id: "list", label: "Lista" }, { id: "grid", label: "Siatka" },
   ];
+
+  if (supabaseConfigError) {
+    return (
+      <div style={{ position: "relative", minHeight: "100vh", boxSizing: "border-box", padding: "44px 24px", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT, color: t.text, background: t.pageBg }}>
+        <div style={{ width: "100%", maxWidth: 520, borderRadius: 20, padding: 24, background: t.cardBg, border: "1px solid rgba(255,107,107,.35)", boxShadow: t.cardShadow, display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: "#ff6b6b" }} />
+            <span style={{ fontSize: 15, fontWeight: 800, color: t.textStrong }}>Brak konfiguracji Supabase</span>
+          </div>
+          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6, color: t.text }}>{supabaseConfigError}</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ position: "relative", minHeight: "100vh", boxSizing: "border-box", padding: "44px 24px", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT, color: t.text, background: t.pageBg, overflow: "hidden", transition: "background .25s" }}>
@@ -591,7 +696,7 @@ export default function App() {
                 </GhostButton>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={{ boxSizing: "border-box", height: 32, display: "flex", alignItems: "center", fontFamily: MONO, fontSize: 11, color: t.mutedFaint }}>{players.length} graczy</span>
-                  <GhostButton onClick={undo} t={t} disabled={undoStack.length === 0} style={{ boxSizing: "border-box", height: 32, display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 700, borderRadius: 8, padding: "0 11px" }}>
+                  <GhostButton onClick={undo} t={t} disabled={undoStack.length === 0 || undoing} style={{ boxSizing: "border-box", height: 32, display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 700, borderRadius: 8, padding: "0 11px" }}>
                     <span style={{ width: 13, height: 13, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, lineHeight: 1 }}>↺</span><span>Cofnij</span>
                   </GhostButton>
                   <div style={{ position: "relative" }} ref={csvMenuRef}>
@@ -618,6 +723,7 @@ export default function App() {
                   <input
                     value={query}
                     onChange={(e) => { setQuery(e.target.value); setAddError(""); }}
+                    onKeyDown={(e) => { if (e.key === "Enter" && canAddQuery) addPlayerNow(); }}
                     placeholder="Szukaj gracza…"
                     style={{ width: "100%", boxSizing: "border-box", background: t.inputBg, border: `1px solid ${addError ? "rgba(255,122,122,.6)" : t.inputBorder}`, borderRadius: 11, color: t.textStrong, fontSize: 12.5, padding: "11px 13px", fontFamily: "inherit" }}
                   />
@@ -664,7 +770,7 @@ export default function App() {
                         {active && (
                           <PlayerPanel
                             player={p} category={category} events={events} amount={amount} setAmount={setAmount}
-                            onAdd={() => apply(p, amount)} onRemove={() => apply(p, -amount)} onDelete={() => removePlayer(p.id)}
+                            onAdd={() => apply(p, resolveAmount(amount))} onRemove={() => apply(p, -resolveAmount(amount))} onDelete={() => removePlayer(p.id)}
                             busy={busyId === p.id} t={t}
                           />
                         )}
@@ -697,7 +803,7 @@ export default function App() {
                           <div style={{ gridColumn: "1 / -1" }}>
                             <PlayerPanel
                               player={p} category={category} events={events} amount={amount} setAmount={setAmount}
-                              onAdd={() => apply(p, amount)} onRemove={() => apply(p, -amount)} onDelete={() => removePlayer(p.id)}
+                              onAdd={() => apply(p, resolveAmount(amount))} onRemove={() => apply(p, -resolveAmount(amount))} onDelete={() => removePlayer(p.id)}
                               busy={busyId === p.id} t={t}
                             />
                           </div>
