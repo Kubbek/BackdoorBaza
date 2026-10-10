@@ -45,7 +45,7 @@ const CATS = {
     glow: "rgba(34,211,238,.7)",
   },
   clubgg: {
-    label: "Club GG", short: "Club GG", color: "#818cf8",
+    label: "Club", short: "Club", color: "#818cf8",
     tile: "linear-gradient(150deg,rgba(99,102,241,.20),rgba(99,102,241,.04))",
     glow: "rgba(99,102,241,.7)",
   },
