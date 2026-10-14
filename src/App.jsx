@@ -104,6 +104,10 @@ function heatColor(ratio, t) {
 // Mapa: nazwa kategorii w JS (klucz w `players`, np. p.liveLimit) -> nazwa
 // kolumny w Postgresie (snake_case, np. live_limit).
 const DB_LIMIT_COLUMN = { live: "live_limit", clubgg: "clubgg_limit", bar: "bar_limit", bilety: "bilety_limit" };
+// To samo, ale dla opcjonalnego nicku NADPISANEGO per-kategoria (patrz
+// `effectiveNick` niżej) — np. gracz może grać pod inną nazwą w Klubie niż
+// w Bilety. NULL = brak nadpisania, używany jest wtedy nick bazowy.
+const DB_NICK_COLUMN = { live: "live_nick", clubgg: "clubgg_nick", bar: "bar_nick", bilety: "bilety_nick" };
 
 function rowFromDb(r) {
   return {
@@ -117,8 +121,22 @@ function rowFromDb(r) {
     clubggLimit: r.clubgg_limit,
     barLimit: r.bar_limit,
     biletyLimit: r.bilety_limit,
+    liveNick: r.live_nick,
+    clubggNick: r.clubgg_nick,
+    barNick: r.bar_nick,
+    biletyNick: r.bilety_nick,
     lastChange: r.last_change ? new Date(r.last_change).getTime() : 0,
   };
+}
+
+// Nazwa gracza widziana W TEJ KONKRETNEJ kategorii — nadpisanie per-
+// kategoria (ustawione przyciskiem "Zapisz dla <kategoria>" w edycji), a
+// jeśli go nie ma, nick bazowy (ten sam wszędzie). Używane wszędzie, gdzie
+// wcześniej było samo `player.nick`, w kontekście jednej, konkretnej
+// kategorii: lista, wyszukiwanie, sortowanie, CSV, import Trade Record,
+// komunikaty o limicie, potwierdzenie usunięcia.
+function effectiveNick(player, category) {
+  return (category && player[category + "Nick"]) || player.nick;
 }
 
 function resolveAmount(raw) {
@@ -268,7 +286,7 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmValue, setConfirmValue] = useState("");
   const [editOpen, setEditOpen] = useState(false);
-  const [editNick, setEditNick] = useState(player.nick);
+  const [editNick, setEditNick] = useState(effectiveNick(player, category));
   const [editLimit, setEditLimit] = useState(player[category + "Limit"] != null ? String(player[category + "Limit"]) : "");
   const [editError, setEditError] = useState("");
   const [editBusy, setEditBusy] = useState(false);
@@ -280,26 +298,27 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
   const [commentDraft, setCommentDraft] = useState("");
   const [commentError, setCommentError] = useState("");
   const [commentBusy, setCommentBusy] = useState(false);
-  const match = confirmValue.trim() === player.nick;
+  const displayNick = effectiveNick(player, category);
+  const match = confirmValue.trim() === displayNick;
   // Gracz.id jest już losowym UUID-em nadawanym przez Postgres — wystarczająco
   // nieodgadywalnym, żeby użyć go wprost jako identyfikatora w linku, bez
   // dodawania osobnej kolumny "tokenu" w bazie.
   const shareUrl = `${window.location.origin}${window.location.pathname}?gracz=${player.id}`;
 
   const openEdit = () => {
-    setEditNick(player.nick);
+    setEditNick(effectiveNick(player, category));
     setEditLimit(player[category + "Limit"] != null ? String(player[category + "Limit"]) : "");
     setEditError("");
     setEditOpen(true);
   };
 
-  const saveEdit = async () => {
+  const saveEdit = async (scope) => {
     const nick = editNick.trim();
     if (!nick) { setEditError("Nick nie może być pusty."); return; }
     const limitRaw = editLimit.trim();
     const limit = limitRaw === "" ? null : Math.max(0, parseInt(limitRaw, 10) || 0);
     setEditBusy(true);
-    const { error } = await onEditSave(nick, limit);
+    const { error } = await onEditSave(nick, limit, scope);
     setEditBusy(false);
     if (error) { setEditError(error); return; }
     setEditOpen(false);
@@ -424,7 +443,7 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
       {linkOpen && (
         <div style={{ borderRadius: 12, padding: "12px 14px", background: t.historyBg, border: `1px solid ${t.historyBorder}`, display: "flex", flexDirection: "column", gap: 9 }}>
           <p style={{ margin: 0, fontSize: 11.5, color: t.text }}>
-            Ten link pokazuje tylko punkty, limity i historię gracza <span style={{ fontWeight: 800, color: t.textStrong }}>{player.nick}</span> — bez logowania i bez danych innych graczy.
+            Ten link pokazuje tylko punkty, limity i historię gracza <span style={{ fontWeight: 800, color: t.textStrong }}>{displayNick}</span> — bez logowania i bez danych innych graczy.
           </p>
           <div style={{ display: "flex", gap: 7 }}>
             <input
@@ -455,7 +474,7 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
       {editOpen && (
         <div style={{ borderRadius: 12, padding: "12px 14px", background: t.historyBg, border: `1px solid ${t.historyBorder}`, display: "flex", flexDirection: "column", gap: 9 }}>
           <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.09, textTransform: "uppercase", color: t.mutedFaint }}>Nick</span>
+            <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.09, textTransform: "uppercase", color: t.mutedFaint }}>Nick w {CATS[category]?.short}</span>
             <input
               value={editNick}
               onChange={(e) => setEditNick(e.target.value)}
@@ -472,25 +491,35 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
               style={{ boxSizing: "border-box", background: t.inputBg, border: `1px solid ${t.inputBorder}`, borderRadius: 9, color: t.textStrong, fontSize: 12.5, padding: "9px 11px", fontFamily: "inherit" }}
             />
           </label>
+          <p style={{ margin: 0, fontSize: 11, color: t.muted, lineHeight: 1.4 }}>
+            Gracz może mieć inny nick w każdej kategorii (np. inna nazwa na platformie Klubu niż w Bilety) — wybierz, czy ten nick ma obowiązywać tylko tutaj, czy wszędzie.
+          </p>
           {editError && <p style={{ margin: 0, fontSize: 11, color: "#ff7a7a" }}>{editError}</p>}
           <div style={{ display: "flex", gap: 7 }}>
-            <GradientButton onClick={saveEdit} disabled={editBusy} style={{ flex: 1, padding: "9px 0", fontSize: 12 }}>Zapisz</GradientButton>
-            <GhostButton onClick={() => setEditOpen(false)} t={t} disabled={editBusy} style={{ flex: 1, justifyContent: "center", padding: "9px 0", fontSize: 12 }}>Anuluj</GhostButton>
+            <GradientButton onClick={() => saveEdit("category")} disabled={editBusy} style={{ flex: 1, padding: "9px 0", fontSize: 11 }}>
+              Zapisz dla {CATS[category]?.short}
+            </GradientButton>
+            <GhostButton onClick={() => saveEdit("all")} t={t} disabled={editBusy} style={{ flex: 1, justifyContent: "center", padding: "9px 0", fontSize: 11 }}>
+              Zapisz dla wszystkich
+            </GhostButton>
           </div>
+          <GhostButton onClick={() => setEditOpen(false)} t={t} disabled={editBusy} style={{ justifyContent: "center", padding: "9px 0", fontSize: 12 }}>
+            Anuluj
+          </GhostButton>
         </div>
       )}
 
       {confirmOpen && (
         <div style={{ borderRadius: 12, padding: "12px 14px", background: "rgba(255,107,107,.06)", border: "1px solid rgba(255,107,107,.28)" }}>
           <p style={{ margin: "0 0 9px", fontSize: 11.5, color: t.text }}>
-            Wpisz <span style={{ fontWeight: 800, color: t.textStrong }}>{player.nick}</span>, aby potwierdzić usunięcie.
+            Wpisz <span style={{ fontWeight: 800, color: t.textStrong }}>{displayNick}</span>, aby potwierdzić usunięcie.
           </p>
           <div style={{ display: "flex", gap: 7 }}>
             <input
               value={confirmValue}
               onChange={(e) => setConfirmValue(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && match && onDelete()}
-              placeholder={player.nick}
+              placeholder={displayNick}
               style={{ flex: 1, minWidth: 0, background: t.inputBg, border: `1px solid ${match ? "rgba(74,222,128,.6)" : t.inputBorder}`, borderRadius: 9, color: t.textStrong, fontSize: 12, padding: "9px 11px", fontFamily: "inherit" }}
             />
             <button
@@ -572,8 +601,13 @@ function OrganizerApp() {
   // until some unrelated state change happened to re-render the component.
   const [csvExportTick, setCsvExportTick] = useState(0);
   const [importMsg, setImportMsg] = useState("");
+  // Lista nicków z pliku "Trade Record", które nie dopasowały się do
+  // żadnego gracza w aplikacji — null = popup zamknięty, tablica (nawet
+  // pusta nigdy nie jest ustawiana) = popup otwarty z tą listą.
+  const [missingPlayersPopup, setMissingPlayersPopup] = useState(null);
   const csvMenuRef = useRef(null);
   const fileInputRef = useRef(null);
+  const tradeFileInputRef = useRef(null);
 
   const t = THEME;
 
@@ -697,7 +731,7 @@ function OrganizerApp() {
     // `apply_points` below, which sees the up-to-date row even if this
     // client's cached `player` is stale (e.g. another device just moved it).
     if (limit != null && player[cat] + delta < -limit) {
-      setMutationError(`Limit gracza „${player.nick}" to -${limit} pkt w tej kategorii — ta zmiana by go przekroczyła.`);
+      setMutationError(`Limit gracza „${effectiveNick(player, cat)}" to -${limit} pkt w tej kategorii — ta zmiana by go przekroczyła.`);
       return;
     }
     setBusyId(player.id);
@@ -713,7 +747,7 @@ function OrganizerApp() {
     if (error) {
       const limitMatch = /^limit_exceeded:(-?\d+)$/.exec(error.message || "");
       if (limitMatch) {
-        setMutationError(`Limit gracza „${player.nick}" to -${limitMatch[1]} pkt w tej kategorii — ta zmiana by go przekroczyła.`);
+        setMutationError(`Limit gracza „${effectiveNick(player, cat)}" to -${limitMatch[1]} pkt w tej kategorii — ta zmiana by go przekroczyła.`);
       } else {
         setMutationError(`Nie udało się zapisać zmiany punktów: ${error.message}`);
       }
@@ -963,13 +997,35 @@ function OrganizerApp() {
   // the "Edytuj" popup. `limit` is the positive number the organizer typed
   // (or null for "no limit") — it's stored as-is and `apply_points` treats
   // it as the floor `-limit` for that category.
-  const updatePlayerMeta = async (player, { nick, limit }) => {
+  //
+  // `scope` rozróżnia dwa przyciski w formularzu edycji:
+  //   "category" — gracz może grać pod inną nazwą w różnych kategoriach
+  //     (np. inny nick na platformie Klubu niż w Bilety) — zapisuje TYLKO
+  //     nadpisanie dla aktualnie otwartej kategorii, nick bazowy i
+  //     nadpisania innych kategorii zostają bez zmian.
+  //   "all" — ustawia nick bazowy (widoczny wszędzie tam, gdzie nie ma
+  //     nadpisania) i CZYŚCI nadpisania we wszystkich 4 kategoriach, bo
+  //     skoro organizator wybrał "wszystkie", to ta nazwa ma być teraz
+  //     jedna, wszędzie.
+  const updatePlayerMeta = async (player, { nick, limit, scope }) => {
     const cat = category;
-    const dup = players.some((p) => p.id !== player.id && p.nick.toLowerCase() === nick.toLowerCase());
-    if (dup) return { error: "Taki nick już istnieje." };
+    const dup = players.some((p) => p.id !== player.id && effectiveNick(p, cat).toLowerCase() === nick.toLowerCase());
+    if (dup) return { error: "Taki nick już istnieje w tej kategorii." };
+
+    const payload = { [DB_LIMIT_COLUMN[cat]]: limit };
+    if (scope === "category") {
+      payload[DB_NICK_COLUMN[cat]] = nick === player.nick ? null : nick;
+    } else {
+      payload.nick = nick;
+      payload.live_nick = null;
+      payload.clubgg_nick = null;
+      payload.bar_nick = null;
+      payload.bilety_nick = null;
+    }
+
     const { data, error } = await supabase
       .from("players")
-      .update({ nick, [DB_LIMIT_COLUMN[cat]]: limit })
+      .update(payload)
       .eq("id", player.id)
       .select()
       .single();
@@ -990,7 +1046,9 @@ function OrganizerApp() {
   };
 
   const exportCsv = () => {
-    const rows = [...players].sort((a, b) => a.nick.localeCompare(b.nick, "pl")).map((p) => `${csvField(p.nick)},${p[category]}`);
+    const rows = [...players]
+      .sort((a, b) => effectiveNick(a, category).localeCompare(effectiveNick(b, category), "pl"))
+      .map((p) => `${csvField(effectiveNick(p, category))},${p[category]}`);
     const csv = [`nick,${category}`, ...rows].join("\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
     const a = document.createElement("a");
@@ -1016,7 +1074,7 @@ function OrganizerApp() {
     if (lines.length && /nick/i.test(lines[0])) lines.shift();
 
     let updated = 0, added = 0, failed = 0;
-    const knownNicks = new Map(players.map((p) => [p.nick.toLowerCase(), p]));
+    const knownNicks = new Map(players.map((p) => [effectiveNick(p, cat).toLowerCase(), p]));
     for (const line of lines) {
       const [rawNick, rawVal] = parseCsvLine(line);
       if (!rawNick) continue;
@@ -1054,6 +1112,133 @@ function OrganizerApp() {
     e.target.value = "";
   };
 
+  const tradeImportClick = () => {
+    setCsvMenuOpen(false);
+    if (tradeFileInputRef.current) tradeFileInputRef.current.click();
+  };
+
+  // Import z eksportu "Trade Record" (zakładka w pliku Excel generowanym
+  // przez platformę klubu) — w odróżnieniu od zwykłego importu CSV
+  // wyżej (który NADPISUJE punkty graczy wartością z pliku), ten import
+  // DOLICZA ujemne kwoty z kolumny "Credits → Amount" do aktualnych
+  // punktów gracza dopasowanego po "Member → Nickname" — dokładnie tak,
+  // jakby ktoś ręcznie klikał "−" dla każdego wiersza. Dodatnie kwoty
+  // (np. doładowania) są celowo pomijane — ten import służy wyłącznie do
+  // masowego wprowadzania odjęć (np. rozliczeń z zewnętrznej platformy).
+  const onTradeFileChosen = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const cat = category;
+
+    let rows;
+    try {
+      // Ładowany dopiero teraz (dynamic import), nie na starcie aplikacji —
+      // xlsx waży ~300kB, a z tego importu korzysta tylko organizator
+      // klikający akurat ten jeden przycisk. Statyczny import obciążałby
+      // niepotrzebnie też anonimowy "Link dla gracza", który nigdy go nie
+      // używa.
+      const XLSX = await import("xlsx");
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const sheetName = wb.SheetNames.find((n) => n.trim().toLowerCase() === "trade record");
+      if (!sheetName) {
+        setImportMsg(`Nie znaleziono zakładki „Trade Record" w pliku (dostępne zakładki: ${wb.SheetNames.join(", ")}).`);
+        e.target.value = "";
+        return;
+      }
+      rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: null, raw: true });
+    } catch (err) {
+      setImportMsg(`Nie udało się odczytać pliku Excel: ${err.message}`);
+      e.target.value = "";
+      return;
+    }
+
+    const headerIdx = rows.findIndex((r) => String(r[0] ?? "").trim() === "Date");
+    if (headerIdx === -1 || !rows[headerIdx + 1]) {
+      setImportMsg(`Nieoczekiwany format pliku — nie znaleziono wiersza nagłówka „Date" w zakładce „Trade Record".`);
+      e.target.value = "";
+      return;
+    }
+    const groupHeader = rows[headerIdx];
+    const subHeader = rows[headerIdx + 1];
+    // Scalone komórki nagłówka ("Credits", "Member"...) mają wartość tylko w
+    // swojej pierwszej kolumnie — "przeciągamy" ją w prawo na resztę grupy,
+    // żeby wiedzieć, do której grupy należy każda kolumna z drugiego wiersza
+    // nagłówka ("Before"/"Amount"/"After", "ID"/"Nickname"...).
+    const filledGroupHeader = [];
+    let lastGroup = null;
+    for (let i = 0; i < Math.max(groupHeader.length, subHeader.length); i++) {
+      if (groupHeader[i] != null && String(groupHeader[i]).trim() !== "") lastGroup = String(groupHeader[i]).trim();
+      filledGroupHeader[i] = lastGroup;
+    }
+    const colAmount = filledGroupHeader.findIndex((g, i) => g === "Credits" && String(subHeader[i] ?? "").trim() === "Amount");
+    const colMemberNick = filledGroupHeader.findIndex((g, i) => g === "Member" && String(subHeader[i] ?? "").trim() === "Nickname");
+    if (colAmount === -1 || colMemberNick === -1) {
+      setImportMsg(`Nie udało się odnaleźć kolumn „Credits → Amount" / „Member → Nickname" — format pliku różni się od oczekiwanego.`);
+      e.target.value = "";
+      return;
+    }
+
+    const dataRows = rows.slice(headerIdx + 2).filter((r) => r[0] != null && String(r[0]).trim() !== "");
+
+    let updated = 0, notMinus = 0, notFound = 0, limitBlocked = 0, failed = 0;
+    const missingNicks = [];
+    // Dopasowanie po nicku WIDOCZNYM W TEJ KATEGORII (nie po nicku bazowym)
+    // — gracz może mieć inną nazwę w Klubie niż np. w Bilety, a ten import
+    // zawsze dotyczy jednej, aktualnie otwartej kategorii.
+    const knownNicks = new Map(players.map((p) => [effectiveNick(p, cat).toLowerCase(), p]));
+    for (const row of dataRows) {
+      const rawAmount = row[colAmount];
+      const amount = typeof rawAmount === "number" ? rawAmount : Number(String(rawAmount ?? "").replace(",", "."));
+      if (!Number.isFinite(amount) || amount >= 0) { notMinus++; continue; }
+
+      const nick = String(row[colMemberNick] ?? "").trim();
+      const player = nick ? knownNicks.get(nick.toLowerCase()) : null;
+      if (!player) {
+        notFound++;
+        if (nick && !missingNicks.includes(nick)) missingNicks.push(nick);
+        continue;
+      }
+
+      const limit = player[cat + "Limit"];
+      if (limit != null && player[cat] + amount < -limit) { limitBlocked++; continue; }
+
+      const { data: playerRow, error } = await supabase.rpc("apply_points", {
+        p_player_id: player.id,
+        p_category: cat,
+        p_delta: amount,
+      });
+      if (error) { failed++; continue; }
+      const updatedPlayer = rowFromDb(playerRow);
+      setPlayers((prev) => prev.map((p) => (p.id === updatedPlayer.id ? updatedPlayer : p)));
+      knownNicks.set(nick.toLowerCase(), updatedPlayer);
+
+      const dateLabel = row[0] ? String(row[0]) : "";
+      const { data: eventRow } = await supabase
+        .from("point_events")
+        .insert({
+          player_id: player.id,
+          category: cat,
+          delta: amount,
+          created_by: account?.username || null,
+          comment: `Import Trade Record${dateLabel ? ` (${dateLabel})` : ""}`,
+        })
+        .select()
+        .single();
+      if (eventRow) setEvents((prev) => [eventFromDb(eventRow), ...prev]);
+      updated++;
+    }
+
+    const parts = [`${updated} zaimportowanych`];
+    if (notFound) parts.push(`${notFound} bez dopasowania nicku`);
+    if (limitBlocked) parts.push(`${limitBlocked} zablokowanych limitem`);
+    if (notMinus) parts.push(`${notMinus} pominiętych (brak minusa)`);
+    if (failed) parts.push(`${failed} nieudanych`);
+    setImportMsg(`Trade Record: ${parts.join(", ")}.`);
+    if (missingNicks.length) setMissingPlayersPopup(missingNicks);
+    e.target.value = "";
+  };
+
   const meta = category ? CATS[category] : null;
   const q = query.trim().toLowerCase();
   // minPts stays 0 as long as nobody is in the red, so the heat map looks
@@ -1065,10 +1250,10 @@ function OrganizerApp() {
   const heatRatio = (pts) => (ptsRange === 0 ? 0 : (pts - minPts) / ptsRange);
   const rows = category
     ? players
-        .filter((p) => p.nick.toLowerCase().includes(q))
+        .filter((p) => effectiveNick(p, category).toLowerCase().includes(q))
         .sort((a, b) => {
           if (sortBy === "recent") return b.lastChange - a.lastChange;
-          return a.nick.localeCompare(b.nick, "pl");
+          return effectiveNick(a, category).localeCompare(effectiveNick(b, category), "pl");
         })
     : [];
   const canAddQuery = query.trim().length > 0 && rows.length === 0;
@@ -1086,7 +1271,10 @@ function OrganizerApp() {
         .slice(0, 50)
         .map((e) => ({
           ...e,
-          nick: players.find((p) => p.id === e.playerId)?.nick || "(usunięty gracz)",
+          nick: (() => {
+            const found = players.find((p) => p.id === e.playerId);
+            return found ? effectiveNick(found, category) : "(usunięty gracz)";
+          })(),
           time: new Date(e.ts).toLocaleString("pl-PL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }),
           label: (e.delta >= 0 ? "+" : "") + e.delta,
           color: e.delta >= 0 ? "#4ade80" : "#ff8f8f",
@@ -1332,12 +1520,14 @@ function OrganizerApp() {
                       <span>CSV</span><span style={{ width: 10, height: 10, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, lineHeight: 1 }}>▾</span>
                     </GhostButton>
                     {csvMenuOpen && (
-                      <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 10, display: "flex", flexDirection: "column", gap: 2, padding: 6, borderRadius: 10, background: t.panelBg, border: `1px solid ${t.panelBorder}`, boxShadow: "0 20px 50px -20px rgba(0,0,0,.5)", minWidth: 130 }}>
+                      <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 10, display: "flex", flexDirection: "column", gap: 2, padding: 6, borderRadius: 10, background: t.panelBg, border: `1px solid ${t.panelBorder}`, boxShadow: "0 20px 50px -20px rgba(0,0,0,.5)", minWidth: 190 }}>
                         <button onClick={exportCsv} style={{ textAlign: "left", background: "transparent", border: "none", color: t.text, fontFamily: "inherit", fontSize: 12, fontWeight: 600, padding: "8px 10px", borderRadius: 7, cursor: "pointer" }}>Eksportuj CSV</button>
                         <button onClick={importClick} style={{ textAlign: "left", background: "transparent", border: "none", color: t.text, fontFamily: "inherit", fontSize: 12, fontWeight: 600, padding: "8px 10px", borderRadius: 7, cursor: "pointer" }}>Importuj CSV</button>
+                        <button onClick={tradeImportClick} style={{ textAlign: "left", background: "transparent", border: "none", color: t.text, fontFamily: "inherit", fontSize: 12, fontWeight: 600, padding: "8px 10px", borderRadius: 7, cursor: "pointer", whiteSpace: "nowrap" }}>Importuj Trade Record</button>
                       </div>
                     )}
                     <input type="file" ref={fileInputRef} accept=".csv" onChange={onFileChosen} style={{ display: "none" }} />
+                    <input type="file" ref={tradeFileInputRef} accept=".xlsx,.xls" onChange={onTradeFileChosen} style={{ display: "none" }} />
                   </div>
                 </div>
               </div>
@@ -1413,7 +1603,7 @@ function OrganizerApp() {
                         >
                           <span style={{ position: "relative", display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
                             <span style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: t.mutedFaint, minWidth: 20, textAlign: "right" }}>{i + 1}</span>
-                            <span style={{ fontSize: 14.5, fontWeight: 700, color: t.textStrong, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nick}</span>
+                            <span style={{ fontSize: 14.5, fontWeight: 700, color: t.textStrong, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{effectiveNick(p, category)}</span>
                           </span>
                           <span style={{ position: "relative", fontFamily: MONO, fontSize: 19, fontWeight: 800, color: t.textStrong }}>
                             {p[category]}
@@ -1426,7 +1616,7 @@ function OrganizerApp() {
                           <PlayerPanel
                             player={p} category={category} events={events} amount={amount} setAmount={setAmount}
                             onAdd={() => apply(p, resolveAmount(amount))} onRemove={() => apply(p, -resolveAmount(amount))} onDelete={() => removePlayer(p.id)}
-                            onEditSave={(nick, limit) => updatePlayerMeta(p, { nick, limit })}
+                            onEditSave={(nick, limit, scope) => updatePlayerMeta(p, { nick, limit, scope })}
                             onCommentSave={saveComment}
                             busy={busyId === p.id} t={t}
                           />
@@ -1453,7 +1643,7 @@ function OrganizerApp() {
                             display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 10,
                           }}
                         >
-                          <span style={{ position: "relative", fontSize: 13, fontWeight: 700, color: t.textStrong, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nick}</span>
+                          <span style={{ position: "relative", fontSize: 13, fontWeight: 700, color: t.textStrong, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{effectiveNick(p, category)}</span>
                           <span style={{ position: "relative", fontFamily: MONO, fontSize: 19, fontWeight: 700, color: t.textStrong }}>
                             {p[category]}
                             {p[category + "Limit"] != null && (
@@ -1466,7 +1656,7 @@ function OrganizerApp() {
                             <PlayerPanel
                               player={p} category={category} events={events} amount={amount} setAmount={setAmount}
                               onAdd={() => apply(p, resolveAmount(amount))} onRemove={() => apply(p, -resolveAmount(amount))} onDelete={() => removePlayer(p.id)}
-                              onEditSave={(nick, limit) => updatePlayerMeta(p, { nick, limit })}
+                              onEditSave={(nick, limit, scope) => updatePlayerMeta(p, { nick, limit, scope })}
                               onCommentSave={saveComment}
                               busy={busyId === p.id} t={t}
                             />
@@ -1515,6 +1705,26 @@ function OrganizerApp() {
           )}
         </div>
       </div>
+
+      {missingPlayersPopup && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(4,6,10,.72)" }} onClick={() => setMissingPlayersPopup(null)}>
+          <div
+            onClick={(ev) => ev.stopPropagation()}
+            style={{ width: "100%", maxWidth: 380, boxSizing: "border-box", borderRadius: 20, padding: 22, background: t.cardBg, border: "1px solid rgba(255,107,107,.35)", boxShadow: t.cardShadow, display: "flex", flexDirection: "column", gap: 12 }}
+          >
+            <span style={{ fontSize: 16, fontWeight: 800, color: "#ff8f8f" }}>Brak gracza</span>
+            <p style={{ margin: 0, fontSize: 12.5, color: t.text, lineHeight: 1.5 }}>
+              W pliku są nicki, których nie ma na liście graczy w tej kategorii — te wiersze zostały pominięte:
+            </p>
+            <div style={{ borderRadius: 12, padding: "10px 12px", background: t.historyBg, border: `1px solid ${t.historyBorder}`, maxHeight: 180, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+              {missingPlayersPopup.map((nick) => (
+                <span key={nick} style={{ fontSize: 12.5, fontWeight: 700, color: t.textStrong, fontFamily: MONO }}>{nick}</span>
+              ))}
+            </div>
+            <GradientButton onClick={() => setMissingPlayersPopup(null)} style={{ padding: "11px 0", fontSize: 13 }}>Ok</GradientButton>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1594,7 +1804,12 @@ function PlayerView({ playerId }) {
             <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
               {Object.entries(CATS).map(([key, c]) => (
                 <div key={key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderRadius: 12, padding: "13px 15px", background: c.tile, border: `1px solid ${t.cardBorder}` }}>
-                  <span style={{ fontSize: 13.5, fontWeight: 700, color: t.textStrong }}>{c.label}</span>
+                  <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <span style={{ fontSize: 13.5, fontWeight: 700, color: t.textStrong }}>{c.label}</span>
+                    {player[key + "Nick"] && player[key + "Nick"] !== player.nick && (
+                      <span style={{ fontSize: 10.5, color: t.mutedFaint }}>jako {player[key + "Nick"]}</span>
+                    )}
+                  </span>
                   <span style={{ fontFamily: MONO, fontSize: 18, fontWeight: 800, color: t.textStrong }}>
                     {player[key]}
                     {player[key + "Limit"] != null && (

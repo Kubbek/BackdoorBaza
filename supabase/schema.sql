@@ -56,6 +56,20 @@
 --   create policy "authenticated update events" on point_events for update
 --     using (auth.role() = 'authenticated')
 --     with check (auth.role() = 'authenticated');
+--
+-- Runda 21: gracz może mieć inny nick w każdej kategorii (np. inna nazwa
+-- na platformie Klubu niż w Bilety) — cztery nowe, opcjonalne kolumny,
+-- NULL = brak nadpisania, używany jest wtedy nick bazowy:
+--
+--   alter table players add column if not exists live_nick text;
+--   alter table players add column if not exists clubgg_nick text;
+--   alter table players add column if not exists bar_nick text;
+--   alter table players add column if not exists bilety_nick text;
+--
+-- (i wklej na nowo funkcję `player_public_view` niżej, żeby link dla
+-- gracza też pokazywał te nadpisania — ta funkcja ma teraz DROP przed
+-- CREATE, więc samo wklejenie całego pliku bezpiecznie ją podmieni, nawet
+-- jeśli masz już starszą wersję z inną listą zwracanych kolumn.)
 
 create extension if not exists "pgcrypto";
 
@@ -88,6 +102,13 @@ alter table players add column if not exists live_limit integer;
 alter table players add column if not exists clubgg_limit integer;
 alter table players add column if not exists bar_limit integer;
 alter table players add column if not exists bilety_limit integer;
+
+-- Nick może być inny w każdej kategorii (Runda 21) — NULL = brak
+-- nadpisania, używany jest wtedy nick bazowy (kolumna `nick` wyżej).
+alter table players add column if not exists live_nick text;
+alter table players add column if not exists clubgg_nick text;
+alter table players add column if not exists bar_nick text;
+alter table players add column if not exists bilety_nick text;
 
 -- Case-insensitive unique nick: a plain `unique` on `nick` only blocks exact
 -- duplicates ("Kuba" and "kuba" would both be accepted), but the app treats
@@ -278,11 +299,20 @@ drop table if exists accounts cascade;
 -- zamkniętych tabelach, widok gracza pod tym linkiem odświeża się przez
 -- okresowe dopytywanie tej funkcji, a nie na żywo — patrz PlayerView
 -- w src/App.jsx.)
-create or replace function player_public_view(p_player_id uuid)
+--
+-- Postgres nie pozwala zmienić kolumn zwracanych przez istniejącą funkcję
+-- samym CREATE OR REPLACE (działa tylko, gdy sygnatura wyjściowa się nie
+-- zmienia) — stąd DROP przed każdym tworzeniem na nowo. Bez tego, na
+-- projekcie gdzie funkcja już istnieje w starszym kształcie, dostaje się
+-- błąd 42P13 ("cannot change return type of existing function").
+drop function if exists player_public_view(uuid);
+
+create function player_public_view(p_player_id uuid)
 returns table(
   id uuid, nick text,
   live integer, clubgg integer, bar integer, bilety integer,
   live_limit integer, clubgg_limit integer, bar_limit integer, bilety_limit integer,
+  live_nick text, clubgg_nick text, bar_nick text, bilety_nick text,
   events json
 )
 language sql
@@ -292,6 +322,7 @@ as $$
   select
     p.id, p.nick, p.live, p.clubgg, p.bar, p.bilety,
     p.live_limit, p.clubgg_limit, p.bar_limit, p.bilety_limit,
+    p.live_nick, p.clubgg_nick, p.bar_nick, p.bilety_nick,
     (
       select coalesce(json_agg(e), '[]'::json) from (
         select id, category, delta, created_by, comment, created_at
@@ -308,6 +339,24 @@ grant execute on function player_public_view(uuid) to anon, authenticated;
 
 -- Realtime — żeby zmiany na jednym urządzeniu pojawiały się na innych bez
 -- odświeżania (tylko dla ZALOGOWANYCH klientów, bo Realtime respektuje te
--- same polityki RLS co zwykłe zapytania).
-alter publication supabase_realtime add table players;
-alter publication supabase_realtime add table point_events;
+-- same polityki RLS co zwykłe zapytania). `alter publication ... add
+-- table` nie ma wariantu "if not exists", więc łapiemy wyjątek
+-- duplicate_object (SQLSTATE 42710 — "already member of publication")
+-- wprost i ignorujemy go: to jedyny w pełni niezawodny sposób, bo samo
+-- sprawdzenie w pg_publication_tables przed ALTER bywa zawodne. Bez tej
+-- osłony ponowne uruchomienie całego pliku na projekcie, który już ma te
+-- tabele w publikacji, kończy się błędem i cofa CAŁĄ resztę skryptu
+-- (Supabase SQL Editor uruchamia wklejony plik jako jedną transakcję).
+do $$
+begin
+  alter publication supabase_realtime add table players;
+exception when duplicate_object then
+  null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table point_events;
+exception when duplicate_object then
+  null;
+end $$;

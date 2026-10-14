@@ -24,8 +24,28 @@ nowa za każdym razem.
 
 Świeżo założony projekt Supabase nie ma jeszcze żadnego konta — nie masz
 się jak zalogować, a stąd nie da się jeszcze użyć ekranu "Zarządzaj
-kontami" (wymaga zalogowanego admina). Pierwsze konto zakładasz ręcznie,
-raz, przez dashboard:
+kontami" (wymaga zalogowanego admina). Są dwa sposoby na założenie
+pierwszego konta — **opcja A poniżej jest zalecana**, bo omija ręczne
+klikanie w dashboardzie, gdzie najłatwiej o pomyłkę (zła wielkość liter w
+mailu, zapomniane "Auto Confirm User", źle wklejony UID).
+
+**Opcja A — skryptem (zalecane):**
+
+1. Upewnij się, że masz uzupełniony plik `.env` (patrz "2. Skonfiguruj
+   projekt lokalnie" niżej) — potrzebne `SUPABASE_URL` i
+   `SUPABASE_SERVICE_ROLE_KEY` — oraz że **cały** plik `supabase/schema.sql`
+   został już uruchomiony w SQL Editorze (ten skrypt zapisuje do tabeli
+   `profiles`, więc musi ona już istnieć).
+2. W folderze projektu, lokalnie (nie na Vercelu):
+   ```bash
+   npm install
+   node scripts/create-first-admin.js admin admin123
+   ```
+   (podmień `admin admin123` na login i hasło, jakich chcesz używać —
+   hasło minimum 4 znaki).
+3. Zaloguj się w aplikacji tym loginem i hasłem.
+
+**Opcja B — ręcznie przez dashboard:**
 
 1. Supabase → **Authentication → Users → Add user**. Jako e-mail wpisz
    `admin@gracze.local` (albo inny login + `@gracze.local` — to fikcyjny
@@ -38,14 +58,14 @@ raz, przez dashboard:
    values ('WKLEJ-TU-UID', 'admin', 'admin');
    ```
    (podmień `'admin'` na login, jakiego chcesz używać, i wklej UID z kroku 1).
-3. Zaloguj się w aplikacji tym loginem i hasłem. Z tego konta dodasz
-   kolejne (dla siebie i innych organizatorów) wygodnie przez "Zarządzaj
-   kontami" — kolejne konta NIE wymagają już ręcznego babrania się w
-   dashboardzie.
+3. Zaloguj się w aplikacji tym loginem i hasłem.
 
-Krok 3 wymaga, żeby backend (patrz "3. Wrzuć na GitHub i wdróż na Vercel" niżej) miał
-skonfigurowany `SUPABASE_SERVICE_ROLE_KEY` — bez tego "Zarządzaj kontami"
-będzie zwracać błąd przy próbie dodania/usunięcia konta.
+Z tego pierwszego konta (obojętnie, którą opcją założonego) dodasz kolejne
+— dla siebie i innych organizatorów — już normalnie przez ekran "Zarządzaj
+kontami". To wymaga, żeby backend (patrz "3. Wrzuć na GitHub i wdróż na
+Vercel" niżej) miał skonfigurowany `SUPABASE_SERVICE_ROLE_KEY` — bez tego
+"Zarządzaj kontami" będzie zwracać błąd przy próbie dodania/usunięcia
+konta.
 
 ## Link dla gracza
 
@@ -224,6 +244,67 @@ sekcję" — Bilety/Klub, i ekran „Wybierz listę" — Live/Club GG/Bar w
 (wcześniej były małe i przyklejone do dolnego-lewego rogu). Nie wymaga
 migracji bazy.
 
+**Runda 17** — nowy skrypt `scripts/create-first-admin.js` do zakładania
+pierwszego konta admina (patrz "Pierwsze logowanie" wyżej, opcja A) —
+robi lokalnie, jedną komendą, dokładnie to, co wcześniej trzeba było
+klikać ręcznie w dashboardzie Supabase (założenie konta w Auth + wiersz w
+`profiles`), więc nie da się już pomylić wielkości liter w mailu, zapomnieć
+"Auto Confirm User" ani wkleić złego UID. Stary, ręczny sposób (opcja B)
+wciąż działa i jest opisany jako zapasowy. Nie wymaga migracji bazy.
+
+**Runda 18** — automatyczny, codzienny backup danych (patrz sekcja
+"Automatyczny backup danych" wyżej) — nowa funkcja `api/backup-cron.js`
+odpalana przez Vercel Cron Jobs, zapisuje pełny zrzut JSON (gracze,
+historia zmian, konta) do prywatnego bucketu Supabase Storage, niezależnie
+od wbudowanych backupów Supabase. Wymaga dodania zmiennej środowiskowej
+`CRON_SECRET` w Vercelu (patrz `.env.example`) i wdrożenia tego
+`vercel.json` razem z resztą kodu — poza tym nie wymaga migracji bazy.
+
+**Runda 19** — nowa opcja importu w menu „CSV” przy liście graczy:
+**„Importuj Trade Record”**. W odróżnieniu od zwykłego importu CSV (który
+nadpisuje punkty wartością z pliku), ten wczytuje plik Excel wyeksportowany
+z platformy klubu (zakładka „Trade Record”) i **dolicza** ujemne kwoty z
+kolumny „Credits → Amount” do aktualnych punktów gracza dopasowanego po
+nicku z kolumny „Member → Nickname” — dokładnie tak, jakby ktoś ręcznie
+klikał „−” dla każdego wiersza z pliku. Jeden nick może wystąpić w pliku
+wielokrotnie (kolejne odjęcia się sumują), dodatnie kwoty są pomijane
+(import służy wyłącznie do masowych odjęć), a wiersze z nickiem
+niepasującym do żadnego gracza w aplikacji są pomijane i zliczane w
+podsumowaniu, nie dodają nowego gracza automatycznie. Każda zaimportowana
+zmiana trafia do historii z komentarzem „Import Trade Record (data)” i
+respektuje limit gracza, jeśli jest ustawiony. Import działa w kontekście
+aktualnie otwartej kategorii (Live/Club GG/Bar/Bilety). Biblioteka do
+czytania plików Excel (`xlsx`) ładuje się dopiero przy pierwszym użyciu
+tej opcji (dynamic import), więc nie obciąża ani zwykłego ładowania
+aplikacji, ani publicznego „Linku dla gracza”. Nie wymaga migracji bazy.
+
+**Runda 20** — kategoria „Club GG" przemianowana na **„Club"** (sama nazwa
+na ekranie, wewnętrzny klucz w bazie `clubgg` bez zmian — żadne dane
+graczy się nie przestawiają). Dodatkowo import „Trade Record" (Runda 19)
+pokazuje teraz **popup „Brak gracza"** po zakończeniu importu, jeśli w
+pliku był choć jeden nick niepasujący do żadnego gracza w aplikacji —
+wylistowane są w nim wszystkie brakujące nicki naraz (zamiast tylko liczby
+w cichym podsumowaniu na dole ekranu, jak wcześniej). Nie wymaga migracji
+bazy.
+
+**Runda 21** — gracz może mieć **inny nick w każdej kategorii** (np. inna
+nazwa na platformie Klubu niż w Bilety). Formularz "Edytuj" ma teraz dwa
+przyciski zamiast jednego "Zapisz":
+- **„Zapisz dla {kategoria}"** — zmienia nick TYLKO w aktualnie otwartej
+  kategorii, reszta zostaje bez zmian.
+- **„Zapisz dla wszystkich"** — ustawia nick bazowy (widoczny wszędzie
+  tam, gdzie nie ma nadpisania) i czyści nadpisania we wszystkich 4
+  kategoriach.
+
+Nick wyświetlany na liście, w wyszukiwarce, sortowaniu, eksporcie/imporcie
+CSV oraz w imporcie Trade Record to zawsze ten widoczny W TEJ kategorii —
+import Trade Record dopasowuje więc wiersze po nicku z aktualnie otwartej
+kategorii, nie po nicku bazowym. „Link dla gracza" pokazuje nick bazowy w
+nagłówku, a przy kategoriach z nadpisanym nickiem dopisuje małym druczkiem
+„jako {nick}". Wymaga migracji bazy (cztery nowe, opcjonalne kolumny
+`live_nick`/`clubgg_nick`/`bar_nick`/`bilety_nick` w `players`,
+zaktualizowana funkcja `player_public_view`) — patrz `supabase/schema.sql`.
+
 **Jeśli masz już działający projekt Supabase** założony starszą wersją tego
 repo, dolicz migracje opisane na górze `supabase/schema.sql` — zmiana
 unikalności nicku na nierozróżniającą wielkość liter i (ważne!) funkcję
@@ -290,17 +371,52 @@ przetestować lokalnie też to, zainstaluj `npm i -g vercel` i uruchamiaj
    (folder `api/` jedzie razem z resztą — Vercel wykrywa go automatycznie
    jako funkcje serverless, nic dodatkowo nie trzeba konfigurować).
 2. Wejdź na [vercel.com](https://vercel.com) → **Add New → Project** → wybierz repo.
-3. W ustawieniach projektu (**Environment Variables**) dodaj WSZYSTKIE
-   cztery zmienne co w `.env` (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`,
-   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`). Bez ostatnich dwóch
-   aplikacja i tak zadziała, ale "Zarządzaj kontami" będzie zgłaszać błąd
-   przy próbie dodania/usunięcia konta.
+3. W ustawieniach projektu (**Environment Variables**) dodaj zmienne z
+   `.env` — `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `SUPABASE_URL`,
+   `SUPABASE_SERVICE_ROLE_KEY` są wymagane (bez ostatnich dwóch aplikacja
+   i tak zadziała, ale "Zarządzaj kontami" będzie zgłaszać błąd przy
+   próbie dodania/usunięcia konta). `CRON_SECRET` jest zalecane — patrz
+   "Automatyczny backup danych" niżej.
 4. Kliknij **Deploy**. Po chwili dostaniesz publiczny adres
    (`https://twoja-nazwa.vercel.app`), który otwierasz na dowolnym urządzeniu.
 
 Każda zmiana punktów synchronizuje się na żywo między wszystkimi otwartymi
 urządzeniami (Supabase Realtime) — dla zalogowanych organizatorów. "Link
 dla gracza" (patrz sekcja wyżej) odświeża się co ~20s zamiast na żywo.
+
+## Automatyczny backup danych
+
+Niezależnie od wbudowanych backupów Supabase (patrz niżej), aplikacja ma
+teraz własny, codzienny backup — funkcja `api/backup-cron.js`, odpalana
+automatycznie przez **Vercel Cron Jobs** (konfiguracja w `vercel.json`,
+domyślnie o 3:00 UTC każdej nocy). Zrzuca WSZYSTKIE dane (`players`,
+`point_events` ze wszystkich kategorii wraz z komentarzami, `profiles`
+bez haseł) do jednego pliku JSON i zapisuje go w prywatnym buckecie
+**Supabase Storage** o nazwie `backups` — w tym samym projekcie Supabase,
+ale niezależnie od samych tabel, więc kopia przetrwa nawet omyłkowe
+`DELETE`/`DROP` na tabeli. Stare kopie (starsze niż 30 dni) są same
+sprzątane przy okazji każdego uruchomienia.
+
+**Jak to skonfigurować:**
+
+1. W Vercelu (**Settings → Environment Variables**) dodaj zmienną
+   `CRON_SECRET` z dowolnym, losowym, długim ciągiem znaków (np.
+   wygenerowanym przez `openssl rand -hex 32`) — to zabezpiecza endpoint
+   backupu przed wywołaniem przez kogokolwiek innego. Bez tej zmiennej
+   backup i tak zadziała (uruchomi go sam Vercel Cron), ale endpoint
+   będzie można też wywołać ręcznie z zewnątrz, znając sam adres.
+2. Bucket `backups` w Supabase Storage tworzy się sam przy pierwszym
+   uruchomieniu — nic nie trzeba klikać ręcznie.
+3. **Pobieranie backupu:** Supabase → **Storage → backups** — lista
+   plików `backup-<data>.json`, każdy można pobrać jednym kliknięciem.
+4. **Backup na żądanie** (nie czekając do 3:00 w nocy): w Vercelu →
+   zakładka **Cron Jobs** przy projekcie → obok wpisu `backup-cron` jest
+   przycisk uruchomienia ręcznego.
+
+Vercel Cron Jobs na darmowym planie (Hobby) pozwalają na maksymalnie jedno
+uruchomienie dziennie na projekt — to pasuje do domyślnej konfiguracji
+(raz w nocy). Jeśli chcesz częściej, zmień `"schedule"` w `vercel.json` —
+wymaga to płatnego planu Vercel (Pro).
 
 ## Ważna uwaga o bezpieczeństwie
 
