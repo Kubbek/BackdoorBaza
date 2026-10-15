@@ -305,6 +305,38 @@ nagłówku, a przy kategoriach z nadpisanym nickiem dopisuje małym druczkiem
 `live_nick`/`clubgg_nick`/`bar_nick`/`bilety_nick` w `players`,
 zaktualizowana funkcja `player_public_view`) — patrz `supabase/schema.sql`.
 
+**Runda 23** — nowa pozycja w menu CSV: **„Importuj raport klienta"**,
+dostępna w KAŻDEJ sekcji/kategorii (Bilety, Live, Club, Bar). Czyta plik
+.xls/.xlsx z eksportu listy klientów platformy Klubu (kolumny „Firma" i
+„Saldo" — mogą być w dowolnym miejscu pliku, szukane po nazwie, nie po
+numerze kolumny). Nick gracza to wartość z kolumny „Firma", a punkty w
+aktualnie otwartej kategorii zostają NADPISANE wartością z kolumny
+„Saldo" (zaokrągloną do liczby całkowitej — tak jak zwykły import CSV, a
+NIE doliczane jak w imporcie Trade Record). Jeśli gracza z danym nickiem
+jeszcze nie ma na liście w tej kategorii, zostaje DODANY AUTOMATYCZNIE
+(w odróżnieniu od importu Trade Record, który takich tylko zgłasza w
+popupie „Brak gracza", nie tworzy ich) — to raport całej bazy klientów,
+nie pojedynczych transakcji, więc "brakujący" gracz tu to po prostu
+jeszcze nie dodany. Wiersze bez wypełnionej kolumny „Firma" są pomijane
+po cichu (w praktyce częste — nie każdy klient ma tam coś wpisane), bo
+nie da się dla nich stworzyć gracza bez nazwy. Format .numbers (Apple)
+NIE jest obsługiwany — brak dla niego biblioteki działającej w
+przeglądarce; jeśli raport jest w Numbers, wyeksportuj go najpierw do
+.xlsx (Plik → Eksportuj do → Excel). Nie wymaga migracji bazy.
+
+**Runda 22** — import „Trade Record" (Rundy 19-20) dostępny jest teraz
+WYŁĄCZNIE w podkategorii **Club** (wewnątrz Klubu) — w Live, Bar i Bilety
+pozycja „Importuj Trade Record" nie pojawia się już w menu CSV. Nie
+wymaga migracji bazy.
+
+**Poprawka (przegląd po Rundzie 21)** — przycisk „Dodaj" przy wyszukiwaniu
+nowego gracza sprawdzał duplikat nicku tylko po nicku bazowym, a nie po
+nicku widocznym w aktualnie otwartej kategorii (niezgodnie z resztą
+funkcji z Rundy 21). W praktyce i tak trudno było to wywołać przez samo
+UI (lista wyszukiwania już wcześniej chowa przycisk „Dodaj", gdy nick się
+pokrywa), ale poprawka domyka tę niekonsekwencję na wszelki wypadek — nie
+wymaga migracji bazy.
+
 **Jeśli masz już działający projekt Supabase** założony starszą wersją tego
 repo, dolicz migracje opisane na górze `supabase/schema.sql` — zmiana
 unikalności nicku na nierozróżniającą wielkość liter i (ważne!) funkcję

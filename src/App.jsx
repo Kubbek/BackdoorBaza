@@ -608,6 +608,7 @@ function OrganizerApp() {
   const csvMenuRef = useRef(null);
   const fileInputRef = useRef(null);
   const tradeFileInputRef = useRef(null);
+  const clientReportFileInputRef = useRef(null);
 
   const t = THEME;
 
@@ -981,8 +982,8 @@ function OrganizerApp() {
   const addPlayerNow = async () => {
     const nick = query.trim();
     if (!nick) return;
-    const exists = players.some((p) => p.nick.toLowerCase() === nick.toLowerCase());
-    if (exists) { setAddError("Taki nick już istnieje."); return; }
+    const exists = players.some((p) => effectiveNick(p, category).toLowerCase() === nick.toLowerCase());
+    if (exists) { setAddError("Taki nick już istnieje w tej kategorii."); return; }
     const { data, error } = await supabase.from("players").insert({ nick, live: 0, clubgg: 0, bar: 0, bilety: 0 }).select().single();
     if (error) {
       setAddError(isDuplicateNickError(error) ? "Taki nick już istnieje." : error.message);
@@ -1129,6 +1130,10 @@ function OrganizerApp() {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
     const cat = category;
+    // Import Trade Record dotyczy wyłącznie platformy Klubu — przycisk jest
+    // schowany poza kategorią Club, ale ten warunek domyka to też na
+    // poziomie samej funkcji (na wypadek zmiany kategorii w trakcie).
+    if (cat !== "clubgg") { e.target.value = ""; return; }
 
     let rows;
     try {
@@ -1236,6 +1241,120 @@ function OrganizerApp() {
     if (failed) parts.push(`${failed} nieudanych`);
     setImportMsg(`Trade Record: ${parts.join(", ")}.`);
     if (missingNicks.length) setMissingPlayersPopup(missingNicks);
+    e.target.value = "";
+  };
+
+  const clientReportImportClick = () => {
+    setCsvMenuOpen(false);
+    if (clientReportFileInputRef.current) clientReportFileInputRef.current.click();
+  };
+
+  // Import z "raportu klienta" (eksport listy klientów z platformy Klubu,
+  // plik .xls/.xlsx z kolumnami "Firma", "Saldo" itd.) — dostępny w każdej
+  // sekcji/kategorii, dotyczy zawsze tej aktualnie otwartej. W odróżnieniu
+  // od importu Trade Record (który DOLICZA kwoty do punktów i NIE tworzy
+  // nowych graczy) ten import NADPISUJE punkty gracza wartością z kolumny
+  // "Saldo" — tak jak zwykły import CSV — i jeśli gracza z danym nickiem
+  // (z kolumny "Firma") jeszcze nie ma na liście, DODAJE go automatycznie
+  // (to raport całej bazy klientów, nie pojedynczych transakcji, więc
+  // "brakujący" gracz tutaj to po prostu jeszcze nie dodany, nie błąd do
+  // zgłoszenia). Wiersze bez wypełnionej kolumny "Firma" (w tym pliku to
+  // częste — nie każdy klient ma tam coś wpisane) są po prostu pomijane,
+  // bo nie da się dla nich stworzyć/dopasować gracza bez nazwy.
+  const onClientReportFileChosen = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const cat = category;
+    if (!cat) { e.target.value = ""; return; }
+
+    let wb, XLSX;
+    try {
+      // Ładowany dopiero teraz (dynamic import) — patrz uzasadnienie przy
+      // imporcie Trade Record wyżej, dotyczy też tego importu.
+      XLSX = await import("xlsx");
+      const buf = await file.arrayBuffer();
+      wb = XLSX.read(buf, { type: "array" });
+    } catch (err) {
+      setImportMsg(`Nie udało się odczytać pliku Excel: ${err.message}`);
+      e.target.value = "";
+      return;
+    }
+
+    // Nazwa zakładki w tym raporcie zmienia się razem z nazwą pliku, więc —
+    // w odróżnieniu od importu Trade Record — nie można jej dopasować po
+    // nazwie. Szukamy więc po prostu pierwszej zakładki, która ma gdzieś
+    // wiersz nagłówka z kolumnami "Firma" i "Saldo".
+    let rows = null, headerIdx = -1, colFirma = -1, colSaldo = -1;
+    for (const sheetName of wb.SheetNames) {
+      const candidateRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: null, raw: true });
+      const idx = candidateRows.findIndex(
+        (r) => r.some((c) => String(c ?? "").trim().toLowerCase() === "firma") &&
+          r.some((c) => String(c ?? "").trim().toLowerCase() === "saldo")
+      );
+      if (idx !== -1) {
+        rows = candidateRows;
+        headerIdx = idx;
+        colFirma = candidateRows[idx].findIndex((c) => String(c ?? "").trim().toLowerCase() === "firma");
+        colSaldo = candidateRows[idx].findIndex((c) => String(c ?? "").trim().toLowerCase() === "saldo");
+        break;
+      }
+    }
+    if (!rows) {
+      setImportMsg(`Nie udało się odnaleźć kolumn „Firma" / „Saldo" w pliku — format różni się od oczekiwanego.`);
+      e.target.value = "";
+      return;
+    }
+
+    const dataRows = rows.slice(headerIdx + 1).filter((r) => r.some((c) => c != null && String(c).trim() !== ""));
+
+    let updated = 0, added = 0, noCompany = 0, failed = 0;
+    // Dopasowanie po nicku WIDOCZNYM W aktualnie otwartej kategorii (tak
+    // samo jak przy imporcie Trade Record — patrz komentarz tam). W
+    // odróżnieniu od Trade Record, gracza, którego nie ma jeszcze na
+    // liście, ten import od razu TWORZY (z nickiem z kolumny "Firma") —
+    // to raport pełnej bazy klientów, nie rozliczenie pojedynczych
+    // transakcji, więc nie ma tu sensownego "brakującego gracza" do
+    // zgłoszenia, jest tylko jeszcze nie dodany.
+    const knownNicks = new Map(players.map((p) => [effectiveNick(p, cat).toLowerCase(), p]));
+    for (const row of dataRows) {
+      const nick = String(row[colFirma] ?? "").trim();
+      if (!nick) { noCompany++; continue; }
+
+      const rawSaldo = row[colSaldo];
+      const saldo = Math.round(Number(String(rawSaldo ?? "0").replace(",", ".")));
+      if (!Number.isFinite(saldo)) { failed++; continue; }
+
+      const player = knownNicks.get(nick.toLowerCase());
+      if (player) {
+        const { data, error } = await supabase
+          .from("players")
+          .update({ [cat]: saldo, last_change: new Date().toISOString() })
+          .eq("id", player.id)
+          .select()
+          .single();
+        if (error) { failed++; continue; }
+        const updatedPlayer = rowFromDb(data);
+        setPlayers((prev) => prev.map((p) => (p.id === updatedPlayer.id ? updatedPlayer : p)));
+        knownNicks.set(nick.toLowerCase(), updatedPlayer);
+        updated++;
+      } else {
+        const { data, error } = await supabase
+          .from("players")
+          .insert({ nick, live: 0, clubgg: 0, bar: 0, bilety: 0, [cat]: saldo })
+          .select()
+          .single();
+        if (error) { failed++; continue; }
+        const newPlayer = rowFromDb(data);
+        setPlayers((prev) => (prev.some((p) => p.id === newPlayer.id) ? prev : [...prev, newPlayer]));
+        knownNicks.set(nick.toLowerCase(), newPlayer);
+        added++;
+      }
+    }
+
+    const parts = [`${updated} zaktualizowanych`, `${added} nowych`];
+    if (noCompany) parts.push(`${noCompany} bez kolumny „Firma"`);
+    if (failed) parts.push(`${failed} nieudanych`);
+    setImportMsg(`Raport klienta: ${parts.join(", ")}.`);
     e.target.value = "";
   };
 
@@ -1523,11 +1642,15 @@ function OrganizerApp() {
                       <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 10, display: "flex", flexDirection: "column", gap: 2, padding: 6, borderRadius: 10, background: t.panelBg, border: `1px solid ${t.panelBorder}`, boxShadow: "0 20px 50px -20px rgba(0,0,0,.5)", minWidth: 190 }}>
                         <button onClick={exportCsv} style={{ textAlign: "left", background: "transparent", border: "none", color: t.text, fontFamily: "inherit", fontSize: 12, fontWeight: 600, padding: "8px 10px", borderRadius: 7, cursor: "pointer" }}>Eksportuj CSV</button>
                         <button onClick={importClick} style={{ textAlign: "left", background: "transparent", border: "none", color: t.text, fontFamily: "inherit", fontSize: 12, fontWeight: 600, padding: "8px 10px", borderRadius: 7, cursor: "pointer" }}>Importuj CSV</button>
-                        <button onClick={tradeImportClick} style={{ textAlign: "left", background: "transparent", border: "none", color: t.text, fontFamily: "inherit", fontSize: 12, fontWeight: 600, padding: "8px 10px", borderRadius: 7, cursor: "pointer", whiteSpace: "nowrap" }}>Importuj Trade Record</button>
+                        {category === "clubgg" && (
+                          <button onClick={tradeImportClick} style={{ textAlign: "left", background: "transparent", border: "none", color: t.text, fontFamily: "inherit", fontSize: 12, fontWeight: 600, padding: "8px 10px", borderRadius: 7, cursor: "pointer", whiteSpace: "nowrap" }}>Importuj Trade Record</button>
+                        )}
+                        <button onClick={clientReportImportClick} style={{ textAlign: "left", background: "transparent", border: "none", color: t.text, fontFamily: "inherit", fontSize: 12, fontWeight: 600, padding: "8px 10px", borderRadius: 7, cursor: "pointer", whiteSpace: "nowrap" }}>Importuj raport klienta</button>
                       </div>
                     )}
                     <input type="file" ref={fileInputRef} accept=".csv" onChange={onFileChosen} style={{ display: "none" }} />
                     <input type="file" ref={tradeFileInputRef} accept=".xlsx,.xls" onChange={onTradeFileChosen} style={{ display: "none" }} />
+                    <input type="file" ref={clientReportFileInputRef} accept=".xlsx,.xls" onChange={onClientReportFileChosen} style={{ display: "none" }} />
                   </div>
                 </div>
               </div>
