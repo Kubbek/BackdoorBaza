@@ -329,6 +329,22 @@ WYŁĄCZNIE w podkategorii **Club** (wewnątrz Klubu) — w Live, Bar i Bilety
 pozycja „Importuj Trade Record" nie pojawia się już w menu CSV. Nie
 wymaga migracji bazy.
 
+**Runda 24** — trzy zmiany:
+- Pole ilości punktów w panelu gracza **resetuje się do 0** po każdej
+  udanej zmianie (+/−), żeby przypadkiem nie dodać tej samej liczby
+  drugi raz. Przy wartości 0 przyciski +/− nic nie robią. Kliknięcie w pole
+  zaznacza jego zawartość, więc od razu można wpisać nową liczbę.
+- Wrócił przycisk sortowania **„Punkty"** (od najwyższych), pomiędzy
+  „A–Z" a „Ostatnie".
+- Import **Trade Record** pomija wiersze, które już były zaimportowane —
+  ten sam gracz, ta sama kwota i ta sama data z pliku (czyli ten sam
+  komentarz „Import Trade Record (data)" w historii). Liczba pominiętych
+  pokazuje się w podsumowaniu importu. Uwaga: jeśli ręcznie zmienisz
+  komentarz takiego wpisu w historii, przestanie on być rozpoznawany jako
+  duplikat.
+
+Nie wymaga migracji bazy.
+
 **Poprawka (przegląd po Rundzie 21)** — przycisk „Dodaj" przy wyszukiwaniu
 nowego gracza sprawdzał duplikat nicku tylko po nicku bazowym, a nie po
 nicku widocznym w aktualnie otwartej kategorii (niezgodnie z resztą

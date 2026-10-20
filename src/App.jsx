@@ -141,7 +141,9 @@ function effectiveNick(player, category) {
 
 function resolveAmount(raw) {
   const n = parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : 1;
+  // 0 (pole zresetowane po poprzedniej zmianie) albo puste pole = brak
+  // zmiany — `apply` wtedy nic nie robi, zamiast po cichu doliczać 1.
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 function eventFromDb(e) {
@@ -348,8 +350,9 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
         </button>
         <input
           value={amount}
-          onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ""))}
-          onBlur={() => { if (amount.trim() === "") setAmount("1"); }}
+          onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, "").replace(/^0+(?=\d)/, ""))}
+          onFocus={(e) => e.target.select()}
+          onBlur={() => { if (amount.trim() === "") setAmount("0"); }}
           inputMode="numeric"
           style={{ flex: 1, minWidth: 0, boxSizing: "border-box", background: t.inputBg, border: `1px solid ${t.inputBorder}`, borderRadius: 10, color: t.textStrong, fontSize: 18, fontWeight: 800, textAlign: "center", padding: "11px 4px", fontFamily: MONO }}
         />
@@ -593,7 +596,7 @@ function OrganizerApp() {
   const [selectedId, setSelectedId] = useState(null);
   // Kept as a string while editing so the field can be cleared and retyped
   // (e.g. "100" -> "300") — see `resolveAmount` for where it becomes a number.
-  const [amount, setAmount] = useState("10");
+  const [amount, setAmount] = useState("0");
   const [csvMenuOpen, setCsvMenuOpen] = useState(false);
   // Bumped after every CSV export purely to force a re-render — the export
   // reminder below reads its timestamp straight from localStorage rather
@@ -725,6 +728,7 @@ function OrganizerApp() {
 
   // ---- point mutations ----
   const apply = async (player, delta) => {
+    if (!delta) return;
     const cat = category;
     const limit = player[cat + "Limit"];
     // Fast client-side check against the currently displayed value, purely
@@ -756,6 +760,7 @@ function OrganizerApp() {
       return;
     }
     setMutationError("");
+    setAmount("0");
     setPlayers((prev) => prev.map((p) => (p.id === playerRow.id ? rowFromDb(playerRow) : p)));
 
     const { data: eventRow, error: eventError } = await supabase
@@ -1192,6 +1197,43 @@ function OrganizerApp() {
     // — gracz może mieć inną nazwę w Klubie niż np. w Bilety, a ten import
     // zawsze dotyczy jednej, aktualnie otwartej kategorii.
     const knownNicks = new Map(players.map((p) => [effectiveNick(p, cat).toLowerCase(), p]));
+
+    // Ochrona przed podwójnym importem (np. ten sam plik wczytany drugi raz
+    // albo nowy eksport nachodzący datami na poprzedni). Wpis z pliku uznaje
+    // się za już zaimportowany, jeśli w bazie jest zmiana tego samego gracza,
+    // o tę samą kwotę, z tym samym komentarzem „Import Trade Record (data)".
+    // Liczymy wystąpienia, a nie samą obecność — jeśli plik ma 2 identyczne
+    // wiersze, a w bazie jest 1, to dograny zostanie dokładnie 1. Historia
+    // dociągana jest wprost z bazy (nie z `events` w pamięci, które mają
+    // tylko ostatnie ~500 zmian), stronami po 1000 wierszy.
+    const tradeKey = (playerId, delta, comment) => `${playerId}|${delta}|${comment}`;
+    const tradeComment = (row) => {
+      const dateLabel = row[0] ? String(row[0]) : "";
+      return `Import Trade Record${dateLabel ? ` (${dateLabel})` : ""}`;
+    };
+    const alreadyImported = new Map();
+    const PAGE = 1000;
+    for (let from = 0; ; from += PAGE) {
+      const { data: prevRows, error: prevError } = await supabase
+        .from("point_events")
+        .select("player_id, delta, comment")
+        .eq("category", cat)
+        .like("comment", "Import Trade Record%")
+        .order("id")
+        .range(from, from + PAGE - 1);
+      if (prevError) {
+        setImportMsg(`Nie udało się sprawdzić wcześniejszych importów (${prevError.message}) — import przerwany, nic nie zostało zmienione.`);
+        e.target.value = "";
+        return;
+      }
+      for (const r of prevRows) {
+        const k = tradeKey(r.player_id, r.delta, r.comment);
+        alreadyImported.set(k, (alreadyImported.get(k) || 0) + 1);
+      }
+      if (prevRows.length < PAGE) break;
+    }
+    let duplicates = 0;
+
     for (const row of dataRows) {
       const rawAmount = row[colAmount];
       const amount = typeof rawAmount === "number" ? rawAmount : Number(String(rawAmount ?? "").replace(",", "."));
@@ -1202,6 +1244,15 @@ function OrganizerApp() {
       if (!player) {
         notFound++;
         if (nick && !missingNicks.includes(nick)) missingNicks.push(nick);
+        continue;
+      }
+
+      const comment = tradeComment(row);
+      const key = tradeKey(player.id, amount, comment);
+      const prevCount = alreadyImported.get(key) || 0;
+      if (prevCount > 0) {
+        alreadyImported.set(key, prevCount - 1);
+        duplicates++;
         continue;
       }
 
@@ -1218,7 +1269,6 @@ function OrganizerApp() {
       setPlayers((prev) => prev.map((p) => (p.id === updatedPlayer.id ? updatedPlayer : p)));
       knownNicks.set(nick.toLowerCase(), updatedPlayer);
 
-      const dateLabel = row[0] ? String(row[0]) : "";
       const { data: eventRow } = await supabase
         .from("point_events")
         .insert({
@@ -1226,7 +1276,7 @@ function OrganizerApp() {
           category: cat,
           delta: amount,
           created_by: account?.username || null,
-          comment: `Import Trade Record${dateLabel ? ` (${dateLabel})` : ""}`,
+          comment,
         })
         .select()
         .single();
@@ -1235,6 +1285,7 @@ function OrganizerApp() {
     }
 
     const parts = [`${updated} zaimportowanych`];
+    if (duplicates) parts.push(`${duplicates} pominiętych (już zaimportowane wcześniej)`);
     if (notFound) parts.push(`${notFound} bez dopasowania nicku`);
     if (limitBlocked) parts.push(`${limitBlocked} zablokowanych limitem`);
     if (notMinus) parts.push(`${notMinus} pominiętych (brak minusa)`);
@@ -1372,6 +1423,7 @@ function OrganizerApp() {
         .filter((p) => effectiveNick(p, category).toLowerCase().includes(q))
         .sort((a, b) => {
           if (sortBy === "recent") return b.lastChange - a.lastChange;
+          if (sortBy === "points") return b[category] - a[category] || effectiveNick(a, category).localeCompare(effectiveNick(b, category), "pl");
           return effectiveNick(a, category).localeCompare(effectiveNick(b, category), "pl");
         })
     : [];
@@ -1411,7 +1463,7 @@ function OrganizerApp() {
   const csvReminderNeeded = category && categoryHasEvents && (!lastCsvExportAt || Date.now() - lastCsvExportAt > DAY_MS);
 
   const sortOptions = [
-    { id: "alpha", label: "A–Z" }, { id: "recent", label: "Ostatnie" },
+    { id: "alpha", label: "A–Z" }, { id: "points", label: "Punkty" }, { id: "recent", label: "Ostatnie" },
   ];
   const viewOptions = [
     { id: "list", label: "Lista" }, { id: "grid", label: "Siatka" },
