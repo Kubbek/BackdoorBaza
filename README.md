@@ -368,6 +368,15 @@ przeglądarka nie podpowiadała zapisanego hasła — ale samo okienko
 „Zapisać hasło?" zależy od przeglądarki i może się nadal pojawiać; wtedy
 wybierz „Nigdy". Nie wymaga migracji bazy.
 
+**Runda 27** — filtr historii „Dzień" (Runda 25) zamieniony na **zakres
+dat „Od / Do"**, w panelu gracza i w widoku „Historia" kategorii. Oba dni
+graniczne wliczają się w całości. Samo „Od" = od tego dnia do dziś, samo
+„Do" = wszystko do tego dnia włącznie, jeden dzień = ta sama data w obu
+polach. Zakres wpisany odwrotnie (Od późniejsze niż Do) jest sam
+zamieniany. Z bazy pobieranych jest najwyżej 1000 zmian z zakresu naraz —
+jeśli jest ich więcej, pod listą pojawia się informacja, żeby zawęzić
+daty. Nie wymaga migracji bazy.
+
 **Poprawka (przegląd po Rundzie 21)** — przycisk „Dodaj" przy wyszukiwaniu
 nowego gracza sprawdzał duplikat nicku tylko po nicku bazowym, a nie po
 nicku widocznym w aktualnie otwartej kategorii (niezgodnie z resztą

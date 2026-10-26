@@ -158,38 +158,57 @@ function eventFromDb(e) {
   };
 }
 
-// Granice jednego dnia w czasie lokalnym — `day` to "RRRR-MM-DD" z pola
-// <input type="date">, więc filtr "15.10" obejmuje 15.10 00:00–24:00 czasu
-// polskiego, nie UTC.
-function dayRange(day) {
-  const start = new Date(`${day}T00:00:00`);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return [start.getTime(), end.getTime()];
+// Zakres dat filtra historii: { from, to } jako "RRRR-MM-DD" z pól
+// <input type="date"> (puste = bez ograniczenia z tej strony). Granice
+// liczone w czasie lokalnym (polskim), oba dni włącznie — "Do: 15.10"
+// obejmuje cały 15.10 do 24:00. Odwrócony zakres (Od > Do) jest zamieniany.
+const NO_RANGE = { from: "", to: "" };
+
+function rangeActive(range) {
+  return Boolean(range.from || range.to);
 }
 
-function inDay(ts, day) {
-  const [start, end] = dayRange(day);
-  return ts >= start && ts < end;
+function rangeBounds(range) {
+  let { from, to } = range;
+  if (from && to && from > to) [from, to] = [to, from];
+  const start = from ? new Date(`${from}T00:00:00`).getTime() : null;
+  let end = null;
+  if (to) {
+    const d = new Date(`${to}T00:00:00`);
+    d.setDate(d.getDate() + 1);
+    end = d.getTime();
+  }
+  return [start, end];
 }
 
-// Wspólny pasek "filtr po dniu" dla historii gracza i historii kategorii.
-function DayFilter({ day, setDay, t }) {
+function inRange(ts, range) {
+  const [start, end] = rangeBounds(range);
+  return (start == null || ts >= start) && (end == null || ts < end);
+}
+
+// Wspólny pasek "Od / Do" dla historii gracza i historii kategorii.
+function DateRangeFilter({ range, setRange, t }) {
+  const inputStyle = { background: t.inputBg, border: `1px solid ${t.inputBorder}`, borderRadius: 8, color: t.textStrong, fontSize: 12, padding: "5px 8px", fontFamily: "inherit", colorScheme: "dark" };
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 10, flexWrap: "wrap" }}>
-      <span style={{ fontSize: 11, color: t.muted }}>Dzień:</span>
-      <input
-        type="date"
-        value={day}
-        onChange={(e) => setDay(e.target.value)}
-        style={{ background: t.inputBg, border: `1px solid ${t.inputBorder}`, borderRadius: 8, color: t.textStrong, fontSize: 12, padding: "5px 8px", fontFamily: "inherit", colorScheme: "dark" }}
-      />
-      {day && (
-        <GhostButton onClick={() => setDay("")} t={t} style={{ fontSize: 11, fontWeight: 700, borderRadius: 8, padding: "5px 10px" }}>
+      <span style={{ fontSize: 11, color: t.muted }}>Od:</span>
+      <input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} style={inputStyle} />
+      <span style={{ fontSize: 11, color: t.muted }}>Do:</span>
+      <input type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} style={inputStyle} />
+      {rangeActive(range) && (
+        <GhostButton onClick={() => setRange(NO_RANGE)} t={t} style={{ fontSize: 11, fontWeight: 700, borderRadius: 8, padding: "5px 10px" }}>
           Wszystkie dni
         </GhostButton>
       )}
     </div>
+  );
+}
+
+function RangeTruncatedNote({ t }) {
+  return (
+    <p style={{ margin: "10px 0 0", fontSize: 11, color: t.muted }}>
+      Pokazano {RANGE_FETCH_LIMIT} najnowszych zmian z tego zakresu — zawęź daty, żeby zobaczyć starsze.
+    </p>
   );
 }
 
@@ -203,8 +222,8 @@ function ShowMoreButton({ onClick, busy, t }) {
 
 const PLAYER_HISTORY_PAGE = 5;
 const CATEGORY_HISTORY_PAGE = 50;
-// Przy filtrze po dniu pokazujemy cały dzień naraz — to górny bezpiecznik.
-const DAY_FETCH_LIMIT = 1000;
+// Przy filtrze dat pokazujemy cały zakres naraz — to górny bezpiecznik.
+const RANGE_FETCH_LIMIT = 1000;
 
 // Postgres unique_violation — used to show a friendly message instead of the
 // raw driver error, and to catch the case where two clients race to insert
@@ -374,32 +393,37 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
     setEditOpen(false);
   };
   // Historia: domyślnie 5 ostatnich zmian, "Pokaż więcej" dociąga z bazy
-  // kolejne starsze. Po wybraniu dnia pokazuje wszystkie zmiany z tego dnia.
+  // kolejne starsze. Po wybraniu zakresu dat pokazuje wszystkie zmiany z
+  // tego zakresu.
   const [historyLimit, setHistoryLimit] = useState(PLAYER_HISTORY_PAGE);
-  const [historyDay, setHistoryDay] = useState("");
+  const [historyRange, setHistoryRange] = useState(NO_RANGE);
   const [historyNoMore, setHistoryNoMore] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyError, setHistoryError] = useState("");
+  const [historyTruncated, setHistoryTruncated] = useState(false);
+  const historyFiltered = rangeActive(historyRange);
 
   useEffect(() => {
     setHistoryLimit(PLAYER_HISTORY_PAGE);
-    setHistoryDay("");
+    setHistoryRange(NO_RANGE);
     setHistoryNoMore(false);
     setHistoryError("");
   }, [player.id, category]);
 
   useEffect(() => {
-    if (!historyDay) return;
+    setHistoryTruncated(false);
+    if (!historyFiltered) return;
     let cancelled = false;
     setHistoryBusy(true);
     setHistoryError("");
-    onFetchEvents({ playerId: player.id, day: historyDay, limit: DAY_FETCH_LIMIT }).then(({ error }) => {
+    onFetchEvents({ playerId: player.id, range: historyRange, limit: RANGE_FETCH_LIMIT }).then(({ count, error }) => {
       if (cancelled) return;
       setHistoryBusy(false);
       if (error) setHistoryError(`Nie udało się wczytać historii: ${error}`);
+      else setHistoryTruncated(count >= RANGE_FETCH_LIMIT);
     });
     return () => { cancelled = true; };
-  }, [historyDay, player.id, category]);
+  }, [historyRange.from, historyRange.to, player.id, category]);
 
   const allHistory = events
     .filter((e) => e.playerId === player.id && e.category === category)
@@ -420,7 +444,7 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
     setHistoryLimit(need);
   };
 
-  const history = (historyDay ? allHistory.filter((e) => inDay(e.ts, historyDay)) : allHistory.slice(0, historyLimit))
+  const history = (historyFiltered ? allHistory.filter((e) => inRange(e.ts, historyRange)) : allHistory.slice(0, historyLimit))
     .map((e) => ({
       id: e.id,
       time: new Date(e.ts).toLocaleString("pl-PL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }),
@@ -455,11 +479,11 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
         <p style={{ margin: "0 0 9px", fontSize: 10, fontWeight: 800, letterSpacing: 0.09, textTransform: "uppercase", color: t.mutedFaint }}>
           Historia <span style={{ textTransform: "none", fontWeight: 600 }}>— kliknij wpis, żeby dodać komentarz</span>
         </p>
-        <DayFilter day={historyDay} setDay={setHistoryDay} t={t} />
+        <DateRangeFilter range={historyRange} setRange={setHistoryRange} t={t} />
         {historyError && <p style={{ margin: "0 0 8px", fontSize: 11, color: "#ff8f8f" }}>{historyError}</p>}
         {history.length === 0 ? (
           <p style={{ margin: 0, fontSize: 12, color: t.muted }}>
-            {historyDay ? (historyBusy ? "Wczytywanie…" : "Brak zmian tego dnia.") : "Brak zmian w tej kategorii."}
+            {historyFiltered ? (historyBusy ? "Wczytywanie…" : "Brak zmian w wybranym okresie.") : "Brak zmian w tej kategorii."}
           </p>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -523,7 +547,8 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
             })}
           </div>
         )}
-        {!historyDay && !historyNoMore && allHistory.length >= historyLimit && (
+        {historyFiltered && historyTruncated && <RangeTruncatedNote t={t} />}
+        {!historyFiltered && !historyNoMore && allHistory.length >= historyLimit && (
           <div style={{ display: "flex", justifyContent: "center" }}>
             <ShowMoreButton onClick={showMoreHistory} busy={historyBusy} t={t} />
           </div>
@@ -696,7 +721,8 @@ function OrganizerApp() {
   // Widok "Historia" kategorii: ile wpisów pokazać, filtr po dniu, i czy
   // baza ma jeszcze coś starszego (patrz `showMoreCategoryHistory`).
   const [catHistoryLimit, setCatHistoryLimit] = useState(CATEGORY_HISTORY_PAGE);
-  const [catHistoryDay, setCatHistoryDay] = useState("");
+  const [catHistoryRange, setCatHistoryRange] = useState(NO_RANGE);
+  const [catHistoryTruncated, setCatHistoryTruncated] = useState(false);
   const [catHistoryNoMore, setCatHistoryNoMore] = useState(false);
   const [catHistoryBusy, setCatHistoryBusy] = useState(false);
   const [catHistoryError, setCatHistoryError] = useState("");
@@ -886,14 +912,15 @@ function OrganizerApp() {
 
   // Dociąga z bazy starsze zmiany (historia na starcie ma tylko ostatnie
   // ~500 w całym klubie) i dokleja je do `events`, bez duplikatów. Używane
-  // przez "Pokaż więcej" i filtr po dniu — w panelu gracza (`playerId`) i w
+  // przez "Pokaż więcej" i filtr dat — w panelu gracza (`playerId`) i w
   // widoku "Historia" całej kategorii (bez `playerId`).
-  const fetchEvents = async ({ playerId, day, before, limit }) => {
+  const fetchEvents = async ({ playerId, range, before, limit }) => {
     let q = supabase.from("point_events").select("*").eq("category", category);
     if (playerId) q = q.eq("player_id", playerId);
-    if (day) {
-      const [start, end] = dayRange(day);
-      q = q.gte("created_at", new Date(start).toISOString()).lt("created_at", new Date(end).toISOString());
+    if (range) {
+      const [start, end] = rangeBounds(range);
+      if (start != null) q = q.gte("created_at", new Date(start).toISOString());
+      if (end != null) q = q.lt("created_at", new Date(end).toISOString());
     }
     if (before) q = q.lt("created_at", new Date(before).toISOString());
     const { data, error } = await q.order("created_at", { ascending: false }).limit(limit);
@@ -907,23 +934,25 @@ function OrganizerApp() {
 
   useEffect(() => {
     setCatHistoryLimit(CATEGORY_HISTORY_PAGE);
-    setCatHistoryDay("");
+    setCatHistoryRange(NO_RANGE);
     setCatHistoryNoMore(false);
     setCatHistoryError("");
   }, [category]);
 
   useEffect(() => {
-    if (!catHistoryDay || !category) return;
+    setCatHistoryTruncated(false);
+    if (!rangeActive(catHistoryRange) || !category) return;
     let cancelled = false;
     setCatHistoryBusy(true);
     setCatHistoryError("");
-    fetchEvents({ day: catHistoryDay, limit: DAY_FETCH_LIMIT }).then(({ error }) => {
+    fetchEvents({ range: catHistoryRange, limit: RANGE_FETCH_LIMIT }).then(({ count, error }) => {
       if (cancelled) return;
       setCatHistoryBusy(false);
       if (error) setCatHistoryError(`Nie udało się wczytać historii: ${error}`);
+      else setCatHistoryTruncated(count >= RANGE_FETCH_LIMIT);
     });
     return () => { cancelled = true; };
-  }, [catHistoryDay, category]);
+  }, [catHistoryRange.from, catHistoryRange.to, category]);
 
   const showMoreCategoryHistory = async () => {
     const loaded = events.filter((e) => e.category === category);
@@ -1601,10 +1630,11 @@ function OrganizerApp() {
   // nie tylko dla jednego, otwartego akurat gracza (to robi już Historia w
   // PlayerPanel).
   // Wpisy filtrowane są też po polu "Szukaj gracza…" — wpisanie nicku i
-  // wybranie dnia pokazuje zmiany tego gracza z tego dnia.
+  // wybranie dat pokazuje zmiany tego gracza z tego okresu.
+  const catHistoryFiltered = rangeActive(catHistoryRange);
   const categoryEvents = category ? events.filter((e) => e.category === category) : [];
   const categoryHistoryAll = categoryEvents
-    .filter((e) => !catHistoryDay || inDay(e.ts, catHistoryDay))
+    .filter((e) => !catHistoryFiltered || inRange(e.ts, catHistoryRange))
     .sort((a, b) => b.ts - a.ts)
     .map((e) => ({
       ...e,
@@ -1617,8 +1647,8 @@ function OrganizerApp() {
       color: e.delta >= 0 ? "#4ade80" : "#ff8f8f",
     }))
     .filter((e) => !q || e.nick.toLowerCase().includes(q));
-  const categoryHistory = catHistoryDay ? categoryHistoryAll : categoryHistoryAll.slice(0, catHistoryLimit);
-  const categoryHistoryCanShowMore = !catHistoryDay && (categoryHistoryAll.length > catHistoryLimit || (!catHistoryNoMore && categoryEvents.length >= catHistoryLimit));
+  const categoryHistory = catHistoryFiltered ? categoryHistoryAll : categoryHistoryAll.slice(0, catHistoryLimit);
+  const categoryHistoryCanShowMore = !catHistoryFiltered && (categoryHistoryAll.length > catHistoryLimit || (!catHistoryNoMore && categoryEvents.length >= catHistoryLimit));
 
   // Przypomnienie o eksporcie CSV — czysto lokalne (localStorage, per
   // kategoria i przeglądarka), bo to tylko wygodna podpowiedź dla
@@ -2018,11 +2048,11 @@ function OrganizerApp() {
                   <p style={{ margin: "0 0 9px", fontSize: 10, fontWeight: 800, letterSpacing: 0.09, textTransform: "uppercase", color: t.mutedFaint }}>
                     Ostatnie zmiany w {meta.short}
                   </p>
-                  <DayFilter day={catHistoryDay} setDay={setCatHistoryDay} t={t} />
+                  <DateRangeFilter range={catHistoryRange} setRange={setCatHistoryRange} t={t} />
                   {catHistoryError && <p style={{ margin: "0 0 8px", fontSize: 11, color: "#ff8f8f" }}>{catHistoryError}</p>}
                   {categoryHistory.length === 0 ? (
                     <p style={{ margin: 0, fontSize: 12, color: t.muted }}>
-                      {catHistoryBusy ? "Wczytywanie…" : catHistoryDay || q ? "Brak zmian pasujących do filtra." : "Brak zmian w tej kategorii."}
+                      {catHistoryBusy ? "Wczytywanie…" : catHistoryFiltered || q ? "Brak zmian pasujących do filtra." : "Brak zmian w tej kategorii."}
                     </p>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -2042,6 +2072,7 @@ function OrganizerApp() {
                       ))}
                     </div>
                   )}
+                  {catHistoryFiltered && catHistoryTruncated && <RangeTruncatedNote t={t} />}
                   {categoryHistoryCanShowMore && (
                     <div style={{ display: "flex", justifyContent: "center" }}>
                       <ShowMoreButton onClick={showMoreCategoryHistory} busy={catHistoryBusy} t={t} />
