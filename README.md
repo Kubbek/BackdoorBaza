@@ -16,9 +16,9 @@ loguje się swoim loginem i hasłem (ekran "Zaloguj się"). Są dwie role:
 Każda zmiana punktów zapisuje, KTO ją wprowadził — nazwa konta pojawia się
 w historii gracza obok czasu zmiany (np. `28.09, 23:12 · kuba`).
 
-Zalogowanie **przetrwa odświeżenie strony** (Supabase Auth zapamiętuje
-sesję) — w odróżnieniu od poprzednich wersji nie trzeba się logować od
-nowa za każdym razem.
+Od Rundy 26 aplikacja **zawsze wymaga logowania** — sesja nie jest
+zapamiętywana, więc odświeżenie strony, nowa karta albo ponowne otwarcie
+przeglądarki pokazuje ekran logowania od nowa.
 
 ### Pierwsze logowanie — załóż konto admina
 
@@ -344,6 +344,29 @@ wymaga migracji bazy.
   duplikat.
 
 Nie wymaga migracji bazy.
+
+**Runda 25** — przeglądanie starszej historii:
+- **„Pokaż więcej"** pod historią w panelu gracza (dociąga po 20
+  starszych zmian) i pod widokiem „Historia" całej kategorii (po 50).
+  Starsze zmiany są pobierane wprost z bazy, więc da się dojść do
+  samego początku historii.
+- **Filtr „Dzień"** w obu miejscach — wybierasz datę z kalendarza i widzisz
+  wszystkie zmiany z tego dnia (czas polski, 00:00–24:00). „Wszystkie dni"
+  wyłącza filtr.
+- W widoku „Historia" kategorii działa też pole **„Szukaj gracza…"** —
+  wpisanie nicku i wybranie dnia pokazuje zmiany tego gracza z tego dnia.
+
+Nie wymaga migracji bazy.
+
+**Runda 26** — aplikacja **zawsze wymaga logowania**. Sesja trzymana jest
+tylko w pamięci otwartej karty (`persistSession: false` w
+`src/supabaseClient.js`), więc odświeżenie strony, nowa karta czy ponowne
+uruchomienie przeglądarki wymaga ponownego wpisania loginu i hasła. Sesje
+zapamiętane przez wcześniejsze wersje są przy pierwszym wejściu usuwane z
+przeglądarki. Pola logowania mają też ustawione `autocomplete`, żeby
+przeglądarka nie podpowiadała zapisanego hasła — ale samo okienko
+„Zapisać hasło?" zależy od przeglądarki i może się nadal pojawiać; wtedy
+wybierz „Nigdy". Nie wymaga migracji bazy.
 
 **Poprawka (przegląd po Rundzie 21)** — przycisk „Dodaj" przy wyszukiwaniu
 nowego gracza sprawdzał duplikat nicku tylko po nicku bazowym, a nie po

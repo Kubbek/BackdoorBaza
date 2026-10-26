@@ -15,4 +15,21 @@ export const supabaseConfigError =
     ? "Brakuje VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY. Jeśli wdrażasz na Vercel: Settings → Environment Variables, dodaj obie zmienne, a potem zrób nowy build ręcznie — Deployments → „⋯” przy najnowszym wpisie → Redeploy (samo dodanie zmiennych nie przebudowuje już wdrożonej wersji)."
     : null;
 
-export const supabase = supabaseConfigError ? null : createClient(supabaseUrl, supabaseAnonKey);
+// Sesja trzymana tylko w pamięci karty (`persistSession: false`) — każde
+// odświeżenie strony, nowa karta czy ponowne otwarcie przeglądarki wymaga
+// zalogowania od nowa (Runda 26; wcześniej sesja była zapamiętywana w
+// localStorage).
+export const supabase = supabaseConfigError
+  ? null
+  : createClient(supabaseUrl, supabaseAnonKey, { auth: { persistSession: false } });
+
+// Sprzątanie po wcześniejszych wersjach: sesja zapisana w localStorage
+// ("sb-<projekt>-auth-token") nie jest już czytana, ale usuwamy ją, żeby
+// token nie leżał w przeglądarce.
+try {
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith("sb-") && key.endsWith("-auth-token")) localStorage.removeItem(key);
+  }
+} catch {
+  // localStorage bywa niedostępny (np. tryb prywatny) — nie ma wtedy czego sprzątać.
+}

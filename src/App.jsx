@@ -158,6 +158,54 @@ function eventFromDb(e) {
   };
 }
 
+// Granice jednego dnia w czasie lokalnym — `day` to "RRRR-MM-DD" z pola
+// <input type="date">, więc filtr "15.10" obejmuje 15.10 00:00–24:00 czasu
+// polskiego, nie UTC.
+function dayRange(day) {
+  const start = new Date(`${day}T00:00:00`);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return [start.getTime(), end.getTime()];
+}
+
+function inDay(ts, day) {
+  const [start, end] = dayRange(day);
+  return ts >= start && ts < end;
+}
+
+// Wspólny pasek "filtr po dniu" dla historii gracza i historii kategorii.
+function DayFilter({ day, setDay, t }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 10, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 11, color: t.muted }}>Dzień:</span>
+      <input
+        type="date"
+        value={day}
+        onChange={(e) => setDay(e.target.value)}
+        style={{ background: t.inputBg, border: `1px solid ${t.inputBorder}`, borderRadius: 8, color: t.textStrong, fontSize: 12, padding: "5px 8px", fontFamily: "inherit", colorScheme: "dark" }}
+      />
+      {day && (
+        <GhostButton onClick={() => setDay("")} t={t} style={{ fontSize: 11, fontWeight: 700, borderRadius: 8, padding: "5px 10px" }}>
+          Wszystkie dni
+        </GhostButton>
+      )}
+    </div>
+  );
+}
+
+function ShowMoreButton({ onClick, busy, t }) {
+  return (
+    <GhostButton onClick={onClick} disabled={busy} t={t} style={{ alignSelf: "center", marginTop: 10, fontSize: 11, fontWeight: 700, borderRadius: 8, padding: "6px 14px" }}>
+      {busy ? "Wczytywanie…" : "Pokaż więcej"}
+    </GhostButton>
+  );
+}
+
+const PLAYER_HISTORY_PAGE = 5;
+const CATEGORY_HISTORY_PAGE = 50;
+// Przy filtrze po dniu pokazujemy cały dzień naraz — to górny bezpiecznik.
+const DAY_FETCH_LIMIT = 1000;
+
 // Postgres unique_violation — used to show a friendly message instead of the
 // raw driver error, and to catch the case where two clients race to insert
 // the same nick (or a nick differing only by case, see schema.sql's
@@ -284,7 +332,7 @@ function Segmented({ options, value, onChange, t }) {
   );
 }
 
-function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRemove, onDelete, onEditSave, onCommentSave, busy, t }) {
+function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRemove, onDelete, onEditSave, onCommentSave, onFetchEvents, busy, t }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmValue, setConfirmValue] = useState("");
   const [editOpen, setEditOpen] = useState(false);
@@ -325,10 +373,54 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
     if (error) { setEditError(error); return; }
     setEditOpen(false);
   };
-  const history = events
+  // Historia: domyślnie 5 ostatnich zmian, "Pokaż więcej" dociąga z bazy
+  // kolejne starsze. Po wybraniu dnia pokazuje wszystkie zmiany z tego dnia.
+  const [historyLimit, setHistoryLimit] = useState(PLAYER_HISTORY_PAGE);
+  const [historyDay, setHistoryDay] = useState("");
+  const [historyNoMore, setHistoryNoMore] = useState(false);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+
+  useEffect(() => {
+    setHistoryLimit(PLAYER_HISTORY_PAGE);
+    setHistoryDay("");
+    setHistoryNoMore(false);
+    setHistoryError("");
+  }, [player.id, category]);
+
+  useEffect(() => {
+    if (!historyDay) return;
+    let cancelled = false;
+    setHistoryBusy(true);
+    setHistoryError("");
+    onFetchEvents({ playerId: player.id, day: historyDay, limit: DAY_FETCH_LIMIT }).then(({ error }) => {
+      if (cancelled) return;
+      setHistoryBusy(false);
+      if (error) setHistoryError(`Nie udało się wczytać historii: ${error}`);
+    });
+    return () => { cancelled = true; };
+  }, [historyDay, player.id, category]);
+
+  const allHistory = events
     .filter((e) => e.playerId === player.id && e.category === category)
-    .sort((a, b) => b.ts - a.ts)
-    .slice(0, 5)
+    .sort((a, b) => b.ts - a.ts);
+
+  const showMoreHistory = async () => {
+    const need = historyLimit + PLAYER_HISTORY_PAGE * 4;
+    const missing = need - allHistory.length;
+    if (missing > 0) {
+      setHistoryBusy(true);
+      setHistoryError("");
+      const oldest = allHistory.length ? allHistory[allHistory.length - 1].ts : undefined;
+      const { count, error } = await onFetchEvents({ playerId: player.id, before: oldest, limit: missing });
+      setHistoryBusy(false);
+      if (error) { setHistoryError(`Nie udało się wczytać historii: ${error}`); return; }
+      if (count < missing) setHistoryNoMore(true);
+    }
+    setHistoryLimit(need);
+  };
+
+  const history = (historyDay ? allHistory.filter((e) => inDay(e.ts, historyDay)) : allHistory.slice(0, historyLimit))
     .map((e) => ({
       id: e.id,
       time: new Date(e.ts).toLocaleString("pl-PL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }),
@@ -363,8 +455,12 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
         <p style={{ margin: "0 0 9px", fontSize: 10, fontWeight: 800, letterSpacing: 0.09, textTransform: "uppercase", color: t.mutedFaint }}>
           Historia <span style={{ textTransform: "none", fontWeight: 600 }}>— kliknij wpis, żeby dodać komentarz</span>
         </p>
+        <DayFilter day={historyDay} setDay={setHistoryDay} t={t} />
+        {historyError && <p style={{ margin: "0 0 8px", fontSize: 11, color: "#ff8f8f" }}>{historyError}</p>}
         {history.length === 0 ? (
-          <p style={{ margin: 0, fontSize: 12, color: t.muted }}>Brak zmian w tej kategorii.</p>
+          <p style={{ margin: 0, fontSize: 12, color: t.muted }}>
+            {historyDay ? (historyBusy ? "Wczytywanie…" : "Brak zmian tego dnia.") : "Brak zmian w tej kategorii."}
+          </p>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {history.map((h) => {
@@ -425,6 +521,11 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
                 </div>
               );
             })}
+          </div>
+        )}
+        {!historyDay && !historyNoMore && allHistory.length >= historyLimit && (
+          <div style={{ display: "flex", justifyContent: "center" }}>
+            <ShowMoreButton onClick={showMoreHistory} busy={historyBusy} t={t} />
           </div>
         )}
       </div>
@@ -592,6 +693,13 @@ function OrganizerApp() {
   const [query, setQuery] = useState("");
   const [addError, setAddError] = useState("");
   const [sortBy, setSortBy] = useState("alpha");
+  // Widok "Historia" kategorii: ile wpisów pokazać, filtr po dniu, i czy
+  // baza ma jeszcze coś starszego (patrz `showMoreCategoryHistory`).
+  const [catHistoryLimit, setCatHistoryLimit] = useState(CATEGORY_HISTORY_PAGE);
+  const [catHistoryDay, setCatHistoryDay] = useState("");
+  const [catHistoryNoMore, setCatHistoryNoMore] = useState(false);
+  const [catHistoryBusy, setCatHistoryBusy] = useState(false);
+  const [catHistoryError, setCatHistoryError] = useState("");
   const [view, setView] = useState("list");
   const [selectedId, setSelectedId] = useState(null);
   // Kept as a string while editing so the field can be cleared and retyped
@@ -774,6 +882,63 @@ function OrganizerApp() {
       setEvents((prev) => [eventFromDb(eventRow), ...prev]);
     }
     setBusyId(null);
+  };
+
+  // Dociąga z bazy starsze zmiany (historia na starcie ma tylko ostatnie
+  // ~500 w całym klubie) i dokleja je do `events`, bez duplikatów. Używane
+  // przez "Pokaż więcej" i filtr po dniu — w panelu gracza (`playerId`) i w
+  // widoku "Historia" całej kategorii (bez `playerId`).
+  const fetchEvents = async ({ playerId, day, before, limit }) => {
+    let q = supabase.from("point_events").select("*").eq("category", category);
+    if (playerId) q = q.eq("player_id", playerId);
+    if (day) {
+      const [start, end] = dayRange(day);
+      q = q.gte("created_at", new Date(start).toISOString()).lt("created_at", new Date(end).toISOString());
+    }
+    if (before) q = q.lt("created_at", new Date(before).toISOString());
+    const { data, error } = await q.order("created_at", { ascending: false }).limit(limit);
+    if (error) return { error: error.message };
+    setEvents((prev) => {
+      const known = new Set(prev.map((e) => e.id));
+      return [...prev, ...data.filter((r) => !known.has(r.id)).map(eventFromDb)];
+    });
+    return { count: data.length };
+  };
+
+  useEffect(() => {
+    setCatHistoryLimit(CATEGORY_HISTORY_PAGE);
+    setCatHistoryDay("");
+    setCatHistoryNoMore(false);
+    setCatHistoryError("");
+  }, [category]);
+
+  useEffect(() => {
+    if (!catHistoryDay || !category) return;
+    let cancelled = false;
+    setCatHistoryBusy(true);
+    setCatHistoryError("");
+    fetchEvents({ day: catHistoryDay, limit: DAY_FETCH_LIMIT }).then(({ error }) => {
+      if (cancelled) return;
+      setCatHistoryBusy(false);
+      if (error) setCatHistoryError(`Nie udało się wczytać historii: ${error}`);
+    });
+    return () => { cancelled = true; };
+  }, [catHistoryDay, category]);
+
+  const showMoreCategoryHistory = async () => {
+    const loaded = events.filter((e) => e.category === category);
+    const need = catHistoryLimit + CATEGORY_HISTORY_PAGE;
+    const missing = need - loaded.length;
+    if (missing > 0) {
+      setCatHistoryBusy(true);
+      setCatHistoryError("");
+      const oldest = loaded.length ? Math.min(...loaded.map((e) => e.ts)) : undefined;
+      const { count, error } = await fetchEvents({ before: oldest, limit: missing });
+      setCatHistoryBusy(false);
+      if (error) { setCatHistoryError(`Nie udało się wczytać historii: ${error}`); return; }
+      if (count < missing) setCatHistoryNoMore(true);
+    }
+    setCatHistoryLimit(need);
   };
 
   // Komentarz dopisuje się PO fakcie — klikając wpis w historii, nie przy
@@ -1435,22 +1600,25 @@ function OrganizerApp() {
   // ostatnie zmiany punktowe w tej kategorii, dla wszystkich graczy naraz —
   // nie tylko dla jednego, otwartego akurat gracza (to robi już Historia w
   // PlayerPanel).
-  const categoryHistory = category
-    ? events
-        .filter((e) => e.category === category)
-        .sort((a, b) => b.ts - a.ts)
-        .slice(0, 50)
-        .map((e) => ({
-          ...e,
-          nick: (() => {
-            const found = players.find((p) => p.id === e.playerId);
-            return found ? effectiveNick(found, category) : "(usunięty gracz)";
-          })(),
-          time: new Date(e.ts).toLocaleString("pl-PL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }),
-          label: (e.delta >= 0 ? "+" : "") + e.delta,
-          color: e.delta >= 0 ? "#4ade80" : "#ff8f8f",
-        }))
-    : [];
+  // Wpisy filtrowane są też po polu "Szukaj gracza…" — wpisanie nicku i
+  // wybranie dnia pokazuje zmiany tego gracza z tego dnia.
+  const categoryEvents = category ? events.filter((e) => e.category === category) : [];
+  const categoryHistoryAll = categoryEvents
+    .filter((e) => !catHistoryDay || inDay(e.ts, catHistoryDay))
+    .sort((a, b) => b.ts - a.ts)
+    .map((e) => ({
+      ...e,
+      nick: (() => {
+        const found = players.find((p) => p.id === e.playerId);
+        return found ? effectiveNick(found, category) : "(usunięty gracz)";
+      })(),
+      time: new Date(e.ts).toLocaleString("pl-PL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }),
+      label: (e.delta >= 0 ? "+" : "") + e.delta,
+      color: e.delta >= 0 ? "#4ade80" : "#ff8f8f",
+    }))
+    .filter((e) => !q || e.nick.toLowerCase().includes(q));
+  const categoryHistory = catHistoryDay ? categoryHistoryAll : categoryHistoryAll.slice(0, catHistoryLimit);
+  const categoryHistoryCanShowMore = !catHistoryDay && (categoryHistoryAll.length > catHistoryLimit || (!catHistoryNoMore && categoryEvents.length >= catHistoryLimit));
 
   // Przypomnienie o eksporcie CSV — czysto lokalne (localStorage, per
   // kategoria i przeglądarka), bo to tylko wygodna podpowiedź dla
@@ -1502,14 +1670,14 @@ function OrganizerApp() {
               ) : (
                 <>
                   <input
-                    value={loginUsername} autoFocus
+                    value={loginUsername} autoFocus autoComplete="off"
                     onChange={(e) => { setLoginUsername(e.target.value); setLoginError(""); }}
                     onKeyDown={(e) => e.key === "Enter" && submitLogin()}
                     placeholder="login"
                     style={{ width: "100%", boxSizing: "border-box", background: t.inputBg, border: `1px solid ${t.inputBorder}`, borderRadius: 12, color: t.textStrong, padding: "13px 14px", fontSize: 13.5, fontFamily: "inherit" }}
                   />
                   <input
-                    type="password" value={loginPassword}
+                    type="password" value={loginPassword} autoComplete="new-password"
                     onChange={(e) => { setLoginPassword(e.target.value); setLoginError(""); }}
                     onKeyDown={(e) => e.key === "Enter" && submitLogin()}
                     placeholder="hasło"
@@ -1793,6 +1961,7 @@ function OrganizerApp() {
                             onAdd={() => apply(p, resolveAmount(amount))} onRemove={() => apply(p, -resolveAmount(amount))} onDelete={() => removePlayer(p.id)}
                             onEditSave={(nick, limit, scope) => updatePlayerMeta(p, { nick, limit, scope })}
                             onCommentSave={saveComment}
+                            onFetchEvents={fetchEvents}
                             busy={busyId === p.id} t={t}
                           />
                         )}
@@ -1833,6 +2002,7 @@ function OrganizerApp() {
                               onAdd={() => apply(p, resolveAmount(amount))} onRemove={() => apply(p, -resolveAmount(amount))} onDelete={() => removePlayer(p.id)}
                               onEditSave={(nick, limit, scope) => updatePlayerMeta(p, { nick, limit, scope })}
                               onCommentSave={saveComment}
+                            onFetchEvents={fetchEvents}
                               busy={busyId === p.id} t={t}
                             />
                           </div>
@@ -1848,8 +2018,12 @@ function OrganizerApp() {
                   <p style={{ margin: "0 0 9px", fontSize: 10, fontWeight: 800, letterSpacing: 0.09, textTransform: "uppercase", color: t.mutedFaint }}>
                     Ostatnie zmiany w {meta.short}
                   </p>
+                  <DayFilter day={catHistoryDay} setDay={setCatHistoryDay} t={t} />
+                  {catHistoryError && <p style={{ margin: "0 0 8px", fontSize: 11, color: "#ff8f8f" }}>{catHistoryError}</p>}
                   {categoryHistory.length === 0 ? (
-                    <p style={{ margin: 0, fontSize: 12, color: t.muted }}>Brak zmian w tej kategorii.</p>
+                    <p style={{ margin: 0, fontSize: 12, color: t.muted }}>
+                      {catHistoryBusy ? "Wczytywanie…" : catHistoryDay || q ? "Brak zmian pasujących do filtra." : "Brak zmian w tej kategorii."}
+                    </p>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                       {categoryHistory.map((h) => (
@@ -1866,6 +2040,11 @@ function OrganizerApp() {
                           <span style={{ fontFamily: MONO, fontWeight: 700, color: h.color, flexShrink: 0 }}>{h.label}</span>
                         </div>
                       ))}
+                    </div>
+                  )}
+                  {categoryHistoryCanShowMore && (
+                    <div style={{ display: "flex", justifyContent: "center" }}>
+                      <ShowMoreButton onClick={showMoreCategoryHistory} busy={catHistoryBusy} t={t} />
                     </div>
                   )}
                 </div>
