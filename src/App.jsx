@@ -56,7 +56,12 @@ const CATS = {
   },
 };
 // Podkategorie widoczne wyłącznie wewnątrz Klubu (czyli CATS bez "bilety").
-const KLUB_CATS = Object.fromEntries(Object.entries(CATS).filter(([key]) => key !== "bilety"));
+// "live" jest tu też wykluczone (Runda 31) — sekcja Live jest schowana z
+// interfejsu na życzenie, ale CELOWO NIE usunięta z samego obiektu CATS
+// ani z bazy danych: dane graczy (punkty, historia, limity, nicki) w tej
+// kategorii zostają nietknięte, więc łatwo ją przywrócić w przyszłości —
+// wystarczy usunąć "live" z filtra poniżej.
+const KLUB_CATS = Object.fromEntries(Object.entries(CATS).filter(([key]) => key !== "bilety" && key !== "live"));
 
 // Tło ekranu kategorii (te trzy rozmyte plamy światła za kartą) dostraja
 // się do koloru aktualnej kategorii, żeby od razu było widać, w której
@@ -1991,7 +1996,7 @@ function OrganizerApp() {
               </div>
               <Divider t={t} />
               {loadError && <p style={{ margin: 0, fontSize: 12, color: "#ff7a7a" }}>Błąd połączenia z bazą: {loadError}</p>}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: `repeat(${Object.keys(KLUB_CATS).length}, 1fr)`, gap: 14 }}>
                 {Object.entries(KLUB_CATS).map(([key, c]) => {
                   const cnt = players.length;
                   const tot = players.reduce((n, p) => n + p[key], 0);
@@ -2502,7 +2507,7 @@ function PlayerView({ playerId }) {
             <span style={{ fontSize: 22, fontWeight: 800, color: t.textStrong, letterSpacing: -0.01 }}>{player.nick}</span>
             <Divider t={t} />
             <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-              {Object.entries(CATS).map(([key, c]) => (
+              {Object.entries(CATS).filter(([key]) => key !== "live").map(([key, c]) => (
                 <div key={key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderRadius: 12, padding: "13px 15px", background: c.tile, border: `1px solid ${t.cardBorder}` }}>
                   <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                     <span style={{ fontSize: 13.5, fontWeight: 700, color: t.textStrong }}>{c.label}</span>

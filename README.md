@@ -377,6 +377,19 @@ zamieniany. Z bazy pobieranych jest najwyżej 1000 zmian z zakresu naraz —
 jeśli jest ich więcej, pod listą pojawia się informacja, żeby zawęzić
 daty. Nie wymaga migracji bazy.
 
+**Runda 31** — sekcja **Live schowana z interfejsu** (i z administracji, i
+z publicznego linku gracza) — ekran wyboru kategorii w Klubie pokazuje
+teraz tylko Club i Bar. Dane graczy w kategorii Live (punkty, historia,
+limity, nicki) ZOSTAJĄ w bazie nietknięte — to celowo odwracalna zmiana,
+tylko w interfejsie, żeby łatwo było przywrócić Live w przyszłości. Nie
+wymaga migracji bazy.
+
+**Runda 30** — automatyczne wylogowanie po **godzinie bezczynności**
+(licznik resetuje się przy każdym kliknięciu/klawiszu/dotknięciu, więc
+aktywna praca nigdy nie zostaje przerwana w pół — tylko zapomniana,
+otwarta karta wyloguje się sama). Obejmuje całość: konto i odblokowany
+Klub, dokładnie to samo co ręczne „Wyloguj". Nie wymaga migracji bazy.
+
 **Runda 29** — dwie zmiany w PIN-ie linku gracza z Rundy 28:
 - **PIN wpisuje się teraz klawiaturą numeryczną na ekranie** (układ jak w
   bankomacie: 1-9, potem C / 0 / ⌫), nie z fizycznej klawiatury — wpisane
