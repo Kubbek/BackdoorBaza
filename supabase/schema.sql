@@ -325,9 +325,12 @@ drop table if exists accounts cascade;
 -- zmienia) — stąd DROP przed każdym tworzeniem na nowo. Bez tego, na
 -- projekcie gdzie funkcja już istnieje w starszym kształcie, dostaje się
 -- błąd 42P13 ("cannot change return type of existing function"). Runda 28
--- zmienia też samą SYGNATURĘ (jeden argument -> dwa), więc drop musi
--- celować w starą, jednoargumentową wersję.
+-- zmienia też samą SYGNATURĘ (jeden argument -> dwa) — usuwamy OBIE
+-- możliwe wersje (starą jednoargumentową i nową dwuargumentową), żeby
+-- cały ten plik można było bezpiecznie uruchomić więcej niż raz, nawet
+-- jeśli poprzednie uruchomienie już stworzyło nową wersję.
 drop function if exists player_public_view(uuid);
+drop function if exists player_public_view(uuid, text);
 
 -- Sprawdza WYŁĄCZNIE, czy PIN jest już ustawiony — nic więcej. Używane
 -- przez PlayerView (src/App.jsx) zaraz po otwarciu linku, żeby pokazać

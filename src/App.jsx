@@ -2335,7 +2335,7 @@ function PlayerView({ playerId }) {
     // pokazać, zanim o cokolwiek zapyta `player_public_view` niżej.
     supabase.rpc("player_link_pin_status", { p_player_id: playerId }).then(({ data, error }) => {
       if (cancelled) return;
-      if (error) { setStage("error"); return; }
+      if (error) { console.error("player_link_pin_status RPC error:", error); setStage("error"); return; }
       if (data == null) { setStage("notfound"); return; }
       setStage(data ? "enter" : "setup");
     });
@@ -2354,6 +2354,11 @@ function PlayerView({ playerId }) {
     const { data, error } = await supabase.rpc("player_public_view", { p_player_id: playerId, p_pin: pinToTry });
     const row = Array.isArray(data) ? data[0] : data;
     if (error || !row) {
+      // Zalogowane do konsoli (F12 -> Console), żeby dało się odczytać
+      // PRAWDZIWĄ przyczynę (np. kod błędu Postgresa/PostgREST), zamiast
+      // zgadywać na podstawie samego ogólnego komunikatu dla użytkownika.
+      if (error) console.error("player_public_view RPC error:", error);
+      else console.error("player_public_view: brak wiersza w odpowiedzi dla", playerId);
       if (showSpinner) { setPinBusy(false); setPinError("Nie udało się połączyć. Spróbuj ponownie."); setPinBuffer(""); }
       return;
     }
