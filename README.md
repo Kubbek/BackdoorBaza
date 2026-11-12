@@ -377,6 +377,33 @@ zamieniany. Z bazy pobieranych jest najwyżej 1000 zmian z zakresu naraz —
 jeśli jest ich więcej, pod listą pojawia się informacja, żeby zawęzić
 daty. Nie wymaga migracji bazy.
 
+**Runda 28** — cztery zmiany:
+- **Filtr „Od / Do" ma teraz też pola godzin** (opcjonalne) — zostawione
+  puste dają stare zachowanie (cały dzień), wypełnione zawężają do
+  konkretnej godziny tego dnia. Dotyczy historii gracza i historii
+  kategorii.
+- **Filtr „Tylko plusy / Tylko minusy"** w tych samych dwóch widokach
+  historii, razem z sumą punktów z aktualnie wyświetlanych wpisów (po
+  zastosowaniu dat/godzin i tego filtra) — widoczną nad listą.
+- **„Link dla gracza" można zabezpieczyć PIN-em**, który gracz sam
+  ustawia przy pierwszym użyciu linku (min. 4 znaki) — każde kolejne
+  wejście wymaga go podać. Dane gracza (punkty, historia) nie wyciekają
+  bez poprawnego PIN-u nawet przez devtools/network tab — to pilnuje sama
+  funkcja w bazie (`player_public_view`), nie tylko interfejs. Organizator
+  widzi w panelu gracza tylko CZY PIN jest ustawiony (nigdy jego
+  wartości) i może go zresetować przyciskiem „Resetuj PIN", jeśli gracz
+  go zapomni — kolejne wejście znów pokaże ekran „ustaw swój PIN".
+  **Wymaga migracji bazy** (nowa kolumna `link_pin`, nowa funkcja
+  `player_link_pin_status`, `player_public_view` ma teraz dwa argumenty
+  — patrz `supabase/schema.sql`).
+- **Poprawka realtime**: zgłoszone „brak widocznej zmiany przy minusach
+  okazjonalnie" — Supabase Realtime nie garantuje ścisłej kolejności
+  dostarczania, gdy dwie zmiany tego samego gracza (np. z dwóch urządzeń)
+  idą prawie naraz; spóźniony, starszy payload mógł nadpisać już
+  wyświetloną nowszą wartość punktów. Teraz porównywany jest
+  `last_change` każdego gracza i starszy payload jest ignorowany. Nie
+  wymaga migracji bazy.
+
 **Poprawka (przegląd po Rundzie 21)** — przycisk „Dodaj" przy wyszukiwaniu
 nowego gracza sprawdzał duplikat nicku tylko po nicku bazowym, a nie po
 nicku widocznym w aktualnie otwartej kategorii (niezgodnie z resztą

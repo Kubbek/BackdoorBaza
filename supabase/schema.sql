@@ -70,6 +70,18 @@
 -- gracza też pokazywał te nadpisania — ta funkcja ma teraz DROP przed
 -- CREATE, więc samo wklejenie całego pliku bezpiecznie ją podmieni, nawet
 -- jeśli masz już starszą wersję z inną listą zwracanych kolumn.)
+--
+-- Runda 28: "Link dla gracza" może być zabezpieczony PIN-em, który gracz
+-- sam ustawia przy pierwszym użyciu linku (jedna nowa, opcjonalna kolumna;
+-- NULL = PIN jeszcze nie ustawiony), plus nowa funkcja
+-- `player_link_pin_status` i `player_public_view` z dodatkowym parametrem
+-- `p_pin` (sygnatura zmieniona z jednego na dwa argumenty):
+--
+--   alter table players add column if not exists link_pin text;
+--
+-- (i wklej na nowo CAŁĄ sekcję "Link dla gracza" niżej — stara funkcja
+-- `player_public_view(uuid)` jednoargumentowa jest usuwana, nowa ma
+-- sygnaturę `player_public_view(uuid, text)`.)
 
 create extension if not exists "pgcrypto";
 
@@ -109,6 +121,14 @@ alter table players add column if not exists live_nick text;
 alter table players add column if not exists clubgg_nick text;
 alter table players add column if not exists bar_nick text;
 alter table players add column if not exists bilety_nick text;
+
+-- PIN chroniący "Link dla gracza" (Runda 28) — NULL = gracz jeszcze nie
+-- ustawił swojego PIN-u (pierwsze użycie linku pozwala go wybrać; kolejne
+-- wymagają go podać). Organizator może go zresetować (ustawić z powrotem
+-- na NULL), jeśli gracz go zapomni — patrz przycisk "Resetuj PIN" w
+-- src/App.jsx, który po prostu czyści tę kolumnę przez istniejącą
+-- politykę "authenticated update players" niżej.
+alter table players add column if not exists link_pin text;
 
 -- Case-insensitive unique nick: a plain `unique` on `nick` only blocks exact
 -- duplicates ("Kuba" and "kuba" would both be accepted), but the app treats
@@ -304,38 +324,90 @@ drop table if exists accounts cascade;
 -- samym CREATE OR REPLACE (działa tylko, gdy sygnatura wyjściowa się nie
 -- zmienia) — stąd DROP przed każdym tworzeniem na nowo. Bez tego, na
 -- projekcie gdzie funkcja już istnieje w starszym kształcie, dostaje się
--- błąd 42P13 ("cannot change return type of existing function").
+-- błąd 42P13 ("cannot change return type of existing function"). Runda 28
+-- zmienia też samą SYGNATURĘ (jeden argument -> dwa), więc drop musi
+-- celować w starą, jednoargumentową wersję.
 drop function if exists player_public_view(uuid);
 
-create function player_public_view(p_player_id uuid)
+-- Sprawdza WYŁĄCZNIE, czy PIN jest już ustawiony — nic więcej. Używane
+-- przez PlayerView (src/App.jsx) zaraz po otwarciu linku, żeby pokazać
+-- właściwy ekran: "ustaw swój PIN" (pierwsze użycie) albo "wpisz PIN"
+-- (każde następne) — zanim o jakiekolwiek dane gracza zapyta właściwa
+-- funkcja `player_public_view` niżej.
+create or replace function player_link_pin_status(p_player_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+as $$
+  select (link_pin is not null) from players where id = p_player_id;
+$$;
+grant execute on function player_link_pin_status(uuid) to anon, authenticated;
+
+-- `p_pin` dodany w Rundzie 28: jeśli gracz jeszcze nie ma ustawionego
+-- PIN-u (`link_pin is null`) i coś podał, ZAPISUJE to teraz jako jego PIN
+-- na stałe (pierwsze użycie linku = rejestracja PIN-u) i od razu zwraca
+-- dane. Jeśli PIN już jest ustawiony, wymaga zgodności — przy błędnym
+-- PIN-ie zwraca wiersz z `pin_ok = false` i WSZYSTKIMI innymi polami
+-- jako NULL (żaden dane gracza nie wyciekają bez poprawnego PIN-u, nawet
+-- przez devtools/network tab).
+create function player_public_view(p_player_id uuid, p_pin text default null)
 returns table(
   id uuid, nick text,
   live integer, clubgg integer, bar integer, bilety integer,
   live_limit integer, clubgg_limit integer, bar_limit integer, bilety_limit integer,
   live_nick text, clubgg_nick text, bar_nick text, bilety_nick text,
-  events json
+  events json,
+  pin_set boolean,
+  pin_ok boolean
 )
-language sql
+language plpgsql
 security definer
 set search_path = public
 as $$
-  select
-    p.id, p.nick, p.live, p.clubgg, p.bar, p.bilety,
-    p.live_limit, p.clubgg_limit, p.bar_limit, p.bilety_limit,
-    p.live_nick, p.clubgg_nick, p.bar_nick, p.bilety_nick,
-    (
-      select coalesce(json_agg(e), '[]'::json) from (
-        select id, category, delta, created_by, comment, created_at
-        from point_events
-        where player_id = p.id
-        order by created_at desc
-        limit 100
-      ) e
-    ) as events
-  from players p
-  where p.id = p_player_id;
+declare
+  stored_pin text;
+  ok boolean;
+begin
+  select players.link_pin into stored_pin from players where players.id = p_player_id;
+  if stored_pin is null and p_pin is not null and length(trim(p_pin)) > 0 then
+    update players set link_pin = trim(p_pin) where players.id = p_player_id;
+    stored_pin := trim(p_pin);
+  end if;
+  ok := stored_pin is null or stored_pin = coalesce(p_pin, '');
+
+  return query
+    select
+      p.id,
+      case when ok then p.nick end,
+      case when ok then p.live end,
+      case when ok then p.clubgg end,
+      case when ok then p.bar end,
+      case when ok then p.bilety end,
+      case when ok then p.live_limit end,
+      case when ok then p.clubgg_limit end,
+      case when ok then p.bar_limit end,
+      case when ok then p.bilety_limit end,
+      case when ok then p.live_nick end,
+      case when ok then p.clubgg_nick end,
+      case when ok then p.bar_nick end,
+      case when ok then p.bilety_nick end,
+      case when ok then (
+        select coalesce(json_agg(e), '[]'::json) from (
+          select id, category, delta, created_by, comment, created_at
+          from point_events
+          where player_id = p.id
+          order by created_at desc
+          limit 100
+        ) e
+      ) end as events,
+      (stored_pin is not null) as pin_set,
+      ok as pin_ok
+    from players p
+    where p.id = p_player_id;
+end;
 $$;
-grant execute on function player_public_view(uuid) to anon, authenticated;
+grant execute on function player_public_view(uuid, text) to anon, authenticated;
 
 -- Realtime — żeby zmiany na jednym urządzeniu pojawiały się na innych bez
 -- odświeżania (tylko dla ZALOGOWANYCH klientów, bo Realtime respektuje te

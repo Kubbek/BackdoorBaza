@@ -126,6 +126,9 @@ function rowFromDb(r) {
     barNick: r.bar_nick,
     biletyNick: r.bilety_nick,
     lastChange: r.last_change ? new Date(r.last_change).getTime() : 0,
+    // Tylko CZY pin jest ustawiony, nigdy sama wartość — organizator ma
+    // widzieć status, nie sekret gracza (patrz "Pin dla linku gracza").
+    linkPinSet: Boolean(r.link_pin),
   };
 }
 
@@ -158,25 +161,37 @@ function eventFromDb(e) {
   };
 }
 
-// Zakres dat filtra historii: { from, to } jako "RRRR-MM-DD" z pól
-// <input type="date"> (puste = bez ograniczenia z tej strony). Granice
-// liczone w czasie lokalnym (polskim), oba dni włącznie — "Do: 15.10"
-// obejmuje cały 15.10 do 24:00. Odwrócony zakres (Od > Do) jest zamieniany.
-const NO_RANGE = { from: "", to: "" };
+// Zakres dat filtra historii: { from, to, fromTime, toTime } jako
+// "RRRR-MM-DD" / "GG:MM" z pól <input type="date"/"time"> (puste = bez
+// ograniczenia z tej strony). Granice liczone w czasie lokalnym (polskim).
+// Bez podanej godziny dzień jest włącznie cały (00:00 do 24:00) — tak jak
+// wcześniej; podanie godziny zawęża do konkretnej chwili (Runda 28 —
+// sortowanie/filtrowanie po godzinach, nie tylko dniach). Odwrócony zakres
+// (Od > Do) jest zamieniany razem z parami godzin.
+const NO_RANGE = { from: "", to: "", fromTime: "", toTime: "" };
 
 function rangeActive(range) {
   return Boolean(range.from || range.to);
 }
 
 function rangeBounds(range) {
-  let { from, to } = range;
-  if (from && to && from > to) [from, to] = [to, from];
-  const start = from ? new Date(`${from}T00:00:00`).getTime() : null;
+  let { from, to, fromTime, toTime } = range;
+  if (from && to && from > to) {
+    [from, to] = [to, from];
+    [fromTime, toTime] = [toTime, fromTime];
+  }
+  const start = from ? new Date(`${from}T${fromTime || "00:00"}:00`).getTime() : null;
   let end = null;
   if (to) {
-    const d = new Date(`${to}T00:00:00`);
-    d.setDate(d.getDate() + 1);
-    end = d.getTime();
+    if (toTime) {
+      // Z podaną godziną "Do" obejmujemy tę minutę włącznie, a NIE cały
+      // dzień — inaczej "Do: ...18:00" pokazywałoby zmiany do końca dnia.
+      end = new Date(`${to}T${toTime}:00`).getTime() + 60000;
+    } else {
+      const d = new Date(`${to}T00:00:00`);
+      d.setDate(d.getDate() + 1);
+      end = d.getTime();
+    }
   }
   return [start, end];
 }
@@ -186,20 +201,56 @@ function inRange(ts, range) {
   return (start == null || ts >= start) && (end == null || ts < end);
 }
 
-// Wspólny pasek "Od / Do" dla historii gracza i historii kategorii.
+// Wspólny pasek "Od / Do" dla historii gracza i historii kategorii. Pola
+// godzin są opcjonalne (Runda 28) — zostawione puste dają stare zachowanie
+// "cały dzień", wypełnione zawężają do konkretnej godziny tego dnia.
 function DateRangeFilter({ range, setRange, t }) {
   const inputStyle = { background: t.inputBg, border: `1px solid ${t.inputBorder}`, borderRadius: 8, color: t.textStrong, fontSize: 12, padding: "5px 8px", fontFamily: "inherit", colorScheme: "dark" };
+  const timeStyle = { ...inputStyle, width: 72 };
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 10, flexWrap: "wrap" }}>
       <span style={{ fontSize: 11, color: t.muted }}>Od:</span>
       <input type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} style={inputStyle} />
+      <input type="time" value={range.fromTime} onChange={(e) => setRange({ ...range, fromTime: e.target.value })} style={timeStyle} />
       <span style={{ fontSize: 11, color: t.muted }}>Do:</span>
       <input type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} style={inputStyle} />
+      <input type="time" value={range.toTime} onChange={(e) => setRange({ ...range, toTime: e.target.value })} style={timeStyle} />
       {rangeActive(range) && (
         <GhostButton onClick={() => setRange(NO_RANGE)} t={t} style={{ fontSize: 11, fontWeight: 700, borderRadius: 8, padding: "5px 10px" }}>
           Wszystkie dni
         </GhostButton>
       )}
+    </div>
+  );
+}
+
+// Filtr "tylko plusy / tylko minusy" + suma widocznych wpisów (Runda 28) —
+// wspólny dla historii gracza i historii kategorii. Suma liczy się z
+// DOKŁADNIE tych wpisów, które są akurat wylistowane pod spodem (czyli po
+// zawężeniu datami/godzinami i tym filtrem), żeby liczba zawsze zgadzała
+// się z tym, co widać na ekranie.
+const SIGN_OPTIONS = [
+  { id: "all", label: "Wszystkie" },
+  { id: "plus", label: "Tylko plusy" },
+  { id: "minus", label: "Tylko minusy" },
+];
+
+function filterBySign(entries, sign) {
+  if (sign === "plus") return entries.filter((e) => e.delta >= 0);
+  if (sign === "minus") return entries.filter((e) => e.delta < 0);
+  return entries;
+}
+
+function SignFilterBar({ value, onChange, sum, t }) {
+  const sumColor = sum > 0 ? "#4ade80" : sum < 0 ? "#ff8f8f" : t.mutedFaint;
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+      <div style={{ width: 232 }}>
+        <Segmented options={SIGN_OPTIONS} value={value} onChange={onChange} t={t} />
+      </div>
+      <span style={{ fontFamily: MONO, fontSize: 12, fontWeight: 800, color: sumColor, whiteSpace: "nowrap" }}>
+        Suma: {sum > 0 ? "+" : ""}{sum} pkt
+      </span>
     </div>
   );
 }
@@ -351,7 +402,9 @@ function Segmented({ options, value, onChange, t }) {
   );
 }
 
-function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRemove, onDelete, onEditSave, onCommentSave, onFetchEvents, busy, t }) {
+function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRemove, onDelete, onEditSave, onCommentSave, onFetchEvents, onResetPin, busy, t }) {
+  const [pinResetBusy, setPinResetBusy] = useState(false);
+  const [pinResetDone, setPinResetDone] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmValue, setConfirmValue] = useState("");
   const [editOpen, setEditOpen] = useState(false);
@@ -401,6 +454,7 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [historyTruncated, setHistoryTruncated] = useState(false);
+  const [historySign, setHistorySign] = useState("all");
   const historyFiltered = rangeActive(historyRange);
 
   useEffect(() => {
@@ -408,6 +462,7 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
     setHistoryRange(NO_RANGE);
     setHistoryNoMore(false);
     setHistoryError("");
+    setHistorySign("all");
   }, [player.id, category]);
 
   useEffect(() => {
@@ -423,7 +478,7 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
       else setHistoryTruncated(count >= RANGE_FETCH_LIMIT);
     });
     return () => { cancelled = true; };
-  }, [historyRange.from, historyRange.to, player.id, category]);
+  }, [historyRange.from, historyRange.to, historyRange.fromTime, historyRange.toTime, player.id, category]);
 
   const allHistory = events
     .filter((e) => e.playerId === player.id && e.category === category)
@@ -444,7 +499,12 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
     setHistoryLimit(need);
   };
 
-  const history = (historyFiltered ? allHistory.filter((e) => inRange(e.ts, historyRange)) : allHistory.slice(0, historyLimit))
+  const historyBase = filterBySign(
+    historyFiltered ? allHistory.filter((e) => inRange(e.ts, historyRange)) : allHistory.slice(0, historyLimit),
+    historySign
+  );
+  const historySum = historyBase.reduce((s, e) => s + e.delta, 0);
+  const history = historyBase
     .map((e) => ({
       id: e.id,
       time: new Date(e.ts).toLocaleString("pl-PL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }),
@@ -480,6 +540,7 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
           Historia <span style={{ textTransform: "none", fontWeight: 600 }}>— kliknij wpis, żeby dodać komentarz</span>
         </p>
         <DateRangeFilter range={historyRange} setRange={setHistoryRange} t={t} />
+        <SignFilterBar value={historySign} onChange={setHistorySign} sum={historySum} t={t} />
         {historyError && <p style={{ margin: "0 0 8px", fontSize: 11, color: "#ff8f8f" }}>{historyError}</p>}
         {history.length === 0 ? (
           <p style={{ margin: 0, fontSize: 12, color: t.muted }}>
@@ -596,6 +657,29 @@ function PlayerPanel({ player, category, events, amount, setAmount, onAdd, onRem
             >
               Zamknij
             </button>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 9, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 11, color: t.muted }}>
+              {player.linkPinSet
+                ? "Gracz ustawił własny PIN — wymagany przy każdym wejściu."
+                : "Gracz jeszcze nie ustawił PIN-u — zostanie o to poproszony przy pierwszym wejściu."}
+            </span>
+            {player.linkPinSet && (
+              <GhostButton
+                onClick={async () => {
+                  setPinResetBusy(true);
+                  await onResetPin();
+                  setPinResetBusy(false);
+                  setPinResetDone(true);
+                  setTimeout(() => setPinResetDone(false), 1500);
+                }}
+                disabled={pinResetBusy}
+                t={t}
+                style={{ fontSize: 11, fontWeight: 700, borderRadius: 8, padding: "6px 11px", flexShrink: 0 }}
+              >
+                {pinResetDone ? "Zresetowano" : pinResetBusy ? "…" : "Resetuj PIN"}
+              </GhostButton>
+            )}
           </div>
         </div>
       )}
@@ -726,6 +810,7 @@ function OrganizerApp() {
   const [catHistoryNoMore, setCatHistoryNoMore] = useState(false);
   const [catHistoryBusy, setCatHistoryBusy] = useState(false);
   const [catHistoryError, setCatHistoryError] = useState("");
+  const [catHistorySign, setCatHistorySign] = useState("all");
   const [view, setView] = useState("list");
   const [selectedId, setSelectedId] = useState(null);
   // Kept as a string while editing so the field can be cleared and retyped
@@ -802,8 +887,16 @@ function OrganizerApp() {
         setPlayers((prev) => {
           if (payload.eventType === "DELETE") return prev.filter((p) => p.id !== payload.old.id);
           const row = rowFromDb(payload.new);
-          const exists = prev.some((p) => p.id === row.id);
-          return exists ? prev.map((p) => (p.id === row.id ? row : p)) : [...prev, row];
+          const existing = prev.find((p) => p.id === row.id);
+          // Realtime nie garantuje ścisłej kolejności dostarczania, kiedy
+          // dwie zmiany tego samego gracza idą prawie naraz (np. dwa
+          // urządzenia klikające "−" w tej samej chwili) — spóźniony,
+          // starszy payload mógłby nadpisać już wyświetloną nowszą wartość
+          // i punkty na liście "wróciłyby" bez żadnego kliknięcia. Porównanie
+          // `last_change` broni przed tym: starszy payload jest ignorowany
+          // (naprawa zgłoszonego "brak widocznej zmiany przy minusach").
+          if (existing && row.lastChange < existing.lastChange) return prev;
+          return existing ? prev.map((p) => (p.id === row.id ? row : p)) : [...prev, row];
         });
       })
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "point_events" }, (payload) => {
@@ -937,6 +1030,7 @@ function OrganizerApp() {
     setCatHistoryRange(NO_RANGE);
     setCatHistoryNoMore(false);
     setCatHistoryError("");
+    setCatHistorySign("all");
   }, [category]);
 
   useEffect(() => {
@@ -952,7 +1046,7 @@ function OrganizerApp() {
       else setCatHistoryTruncated(count >= RANGE_FETCH_LIMIT);
     });
     return () => { cancelled = true; };
-  }, [catHistoryRange.from, catHistoryRange.to, category]);
+  }, [catHistoryRange.from, catHistoryRange.to, catHistoryRange.fromTime, catHistoryRange.toTime, category]);
 
   const showMoreCategoryHistory = async () => {
     const loaded = events.filter((e) => e.category === category);
@@ -1230,6 +1324,22 @@ function OrganizerApp() {
       .select()
       .single();
     if (error) return { error: isDuplicateNickError(error) ? "Taki nick już istnieje." : error.message };
+    setPlayers((prev) => prev.map((p) => (p.id === data.id ? rowFromDb(data) : p)));
+    return { error: null };
+  };
+
+  // Czyści PIN gracza do "Linku dla gracza" (Runda 28) — gracz, który go
+  // zapomniał, dostaje po otwarciu linku ponownie ekran "ustaw swój PIN",
+  // zamiast być trwale zablokowany. Organizator nigdy nie widzi samej
+  // wartości PIN-u, tylko to, czy jest ustawiony (`linkPinSet`).
+  const resetLinkPin = async (player) => {
+    const { data, error } = await supabase
+      .from("players")
+      .update({ link_pin: null })
+      .eq("id", player.id)
+      .select()
+      .single();
+    if (error) return { error: error.message };
     setPlayers((prev) => prev.map((p) => (p.id === data.id ? rowFromDb(data) : p)));
     return { error: null };
   };
@@ -1633,8 +1743,10 @@ function OrganizerApp() {
   // wybranie dat pokazuje zmiany tego gracza z tego okresu.
   const catHistoryFiltered = rangeActive(catHistoryRange);
   const categoryEvents = category ? events.filter((e) => e.category === category) : [];
-  const categoryHistoryAll = categoryEvents
-    .filter((e) => !catHistoryFiltered || inRange(e.ts, catHistoryRange))
+  const categoryHistoryAll = filterBySign(
+    categoryEvents.filter((e) => !catHistoryFiltered || inRange(e.ts, catHistoryRange)),
+    catHistorySign
+  )
     .sort((a, b) => b.ts - a.ts)
     .map((e) => ({
       ...e,
@@ -1648,6 +1760,7 @@ function OrganizerApp() {
     }))
     .filter((e) => !q || e.nick.toLowerCase().includes(q));
   const categoryHistory = catHistoryFiltered ? categoryHistoryAll : categoryHistoryAll.slice(0, catHistoryLimit);
+  const categoryHistorySum = categoryHistory.reduce((s, e) => s + e.delta, 0);
   const categoryHistoryCanShowMore = !catHistoryFiltered && (categoryHistoryAll.length > catHistoryLimit || (!catHistoryNoMore && categoryEvents.length >= catHistoryLimit));
 
   // Przypomnienie o eksporcie CSV — czysto lokalne (localStorage, per
@@ -1992,6 +2105,7 @@ function OrganizerApp() {
                             onEditSave={(nick, limit, scope) => updatePlayerMeta(p, { nick, limit, scope })}
                             onCommentSave={saveComment}
                             onFetchEvents={fetchEvents}
+                            onResetPin={() => resetLinkPin(p)}
                             busy={busyId === p.id} t={t}
                           />
                         )}
@@ -2033,6 +2147,7 @@ function OrganizerApp() {
                               onEditSave={(nick, limit, scope) => updatePlayerMeta(p, { nick, limit, scope })}
                               onCommentSave={saveComment}
                             onFetchEvents={fetchEvents}
+                              onResetPin={() => resetLinkPin(p)}
                               busy={busyId === p.id} t={t}
                             />
                           </div>
@@ -2049,6 +2164,7 @@ function OrganizerApp() {
                     Ostatnie zmiany w {meta.short}
                   </p>
                   <DateRangeFilter range={catHistoryRange} setRange={setCatHistoryRange} t={t} />
+                  <SignFilterBar value={catHistorySign} onChange={setCatHistorySign} sum={categoryHistorySum} t={t} />
                   {catHistoryError && <p style={{ margin: "0 0 8px", fontSize: 11, color: "#ff8f8f" }}>{catHistoryError}</p>}
                   {categoryHistory.length === 0 ? (
                     <p style={{ margin: 0, fontSize: 12, color: t.muted }}>
@@ -2124,49 +2240,99 @@ function PlayerView({ playerId }) {
   const t = THEME;
   const [player, setPlayer] = useState(null);
   const [events, setEvents] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [notFound, setNotFound] = useState(false);
+  // "checking" (sprawdzamy, czy PIN jest ustawiony) -> "setup" (pierwsze
+  // użycie linku, gracz wybiera PIN) albo "enter" (PIN już jest, trzeba go
+  // podać) -> "unlocked" (PIN zgodny, dane widoczne). "notfound" gdy gracz
+  // nie istnieje.
+  const [stage, setStage] = useState("checking");
+  const [pin, setPin] = useState("");
+  const [pinInput, setPinInput] = useState("");
+  const [pinConfirmInput, setPinConfirmInput] = useState("");
+  const [pinError, setPinError] = useState("");
+  const [pinBusy, setPinBusy] = useState(false);
 
   useEffect(() => {
-    if (!supabase) {
-      setLoading(false);
+    if (!supabase) return;
+    let cancelled = false;
+    // `player_link_pin_status` (security definer) zwraca WYŁĄCZNIE czy PIN
+    // istnieje — żadnych danych gracza — żeby zdecydować, który ekran
+    // pokazać, zanim o cokolwiek zapyta `player_public_view` niżej.
+    supabase.rpc("player_link_pin_status", { p_player_id: playerId }).then(({ data, error }) => {
+      if (cancelled) return;
+      if (error || data == null) setStage("notfound");
+      else setStage(data ? "enter" : "setup");
+    });
+    return () => { cancelled = true; };
+  }, [playerId]);
+
+  // Jedyna droga do danych gracza bez logowania — funkcja `player_public_view`
+  // (security definer w schema.sql), bo `players`/`point_events` są od
+  // Rundy 10 zamknięte za RLS wymagającym prawdziwej sesji. Zwraca
+  // WYŁĄCZNIE tego jednego gracza (nigdy całą tabelę) razem z jego
+  // zdarzeniami — i od Rundy 28 respektuje PIN: bez zgodnego `p_pin`
+  // wszystkie pola poza `pin_set`/`pin_ok` wracają jako NULL, więc żadne
+  // dane nie wyciekają bez poprawnego PIN-u.
+  const unlock = async (pinToTry, { showSpinner }) => {
+    if (showSpinner) setPinBusy(true);
+    const { data, error } = await supabase.rpc("player_public_view", { p_player_id: playerId, p_pin: pinToTry });
+    const row = Array.isArray(data) ? data[0] : data;
+    if (error || !row) {
+      if (showSpinner) { setPinBusy(false); setPinError("Nie udało się połączyć. Spróbuj ponownie."); }
       return;
     }
-    let cancelled = false;
-
-    // Jedyna droga do danych gracza bez logowania — funkcja `player_public_view`
-    // (security definer w schema.sql), bo `players`/`point_events` są od
-    // Rundy 10 zamknięte za RLS wymagającym prawdziwej sesji. Zwraca
-    // WYŁĄCZNIE tego jednego gracza (nigdy całą tabelę) razem z jego
-    // zdarzeniami w jednym wywołaniu.
-    async function load(showSpinner) {
-      if (showSpinner) setLoading(true);
-      const { data, error } = await supabase.rpc("player_public_view", { p_player_id: playerId });
-      if (cancelled) return;
-      const row = Array.isArray(data) ? data[0] : data;
-      if (error || !row) {
-        setNotFound(true);
+    if (!row.pin_ok) {
+      if (showSpinner) {
+        setPinBusy(false);
+        // Rzadki wyścig: kto inny zdążył ustawić PIN między sprawdzeniem
+        // statusu a tym zgłoszeniem — przełącz z "setup" na "enter".
+        if (row.pin_set && stage === "setup") {
+          setStage("enter");
+          setPinError("Ktoś już ustawił PIN dla tego gracza — wpisz go.");
+        } else {
+          setPinError("Nieprawidłowy PIN.");
+        }
       } else {
-        setPlayer(rowFromDb(row));
-        setEvents((row.events || []).map(eventFromDb));
-        setNotFound(false);
+        // Odświeżenie w tle (co 20s): organizator zresetował PIN w trakcie
+        // przeglądania — poproś o nowy, zamiast ciho zgasić dane.
+        setStage("enter");
+        setPinError("PIN został zresetowany — wpisz go ponownie.");
       }
-      if (showSpinner) setLoading(false);
+      return;
     }
-    load(true);
+    setPlayer(rowFromDb(row));
+    setEvents((row.events || []).map(eventFromDb));
+    setPin(pinToTry);
+    setPinError("");
+    if (showSpinner) setPinBusy(false);
+    setStage("unlocked");
+  };
 
-    // Dostęp anonimowy nie może już subskrybować Realtime na zamkniętych
-    // tabelach (Realtime respektuje te same polityki RLS co zwykłe
-    // zapytania) — ten widok odświeża się więc okresowym dopytywaniem
-    // zamiast na żywo. 20s to rozsądny kompromis między "prawie na żywo"
-    // a niepotrzebnym obciążaniem bazy zapytaniami z otwartego linku.
-    const interval = setInterval(() => load(false), 20000);
+  // Dostęp anonimowy nie może już subskrybować Realtime na zamkniętych
+  // tabelach — ten widok odświeża się więc okresowym dopytywaniem (z tym
+  // samym, już zweryfikowanym PIN-em) zamiast na żywo. 20s to rozsądny
+  // kompromis między "prawie na żywo" a obciążaniem bazy.
+  useEffect(() => {
+    if (stage !== "unlocked") return;
+    const interval = setInterval(() => unlock(pin, { showSpinner: false }), 20000);
+    return () => clearInterval(interval);
+  }, [stage, pin]);
 
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [playerId]);
+  const submitSetup = (e) => {
+    e.preventDefault();
+    const value = pinInput.trim();
+    if (value.length < 4) { setPinError("PIN musi mieć co najmniej 4 znaki."); return; }
+    if (value !== pinConfirmInput.trim()) { setPinError("PIN-y się nie zgadzają."); return; }
+    unlock(value, { showSpinner: true });
+  };
+
+  const submitEnter = (e) => {
+    e.preventDefault();
+    const value = pinInput.trim();
+    if (!value) { setPinError("Wpisz PIN."); return; }
+    unlock(value, { showSpinner: true });
+  };
+
+  const pinInputStyle = { boxSizing: "border-box", width: "100%", background: t.inputBg, border: `1px solid ${t.inputBorder}`, borderRadius: 10, color: t.textStrong, fontSize: 14, padding: "11px 13px", fontFamily: "inherit" };
 
   return (
     <div style={{ position: "relative", minHeight: "100vh", boxSizing: "border-box", padding: "44px 24px", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT, color: t.text, background: t.pageBg, overflow: "hidden" }}>
@@ -2178,11 +2344,38 @@ function PlayerView({ playerId }) {
       <div style={{ position: "relative", width: "100%", maxWidth: 480, boxSizing: "border-box", borderRadius: 26, padding: "28px 28px 22px", background: t.cardBg, border: `1px solid ${t.cardBorder}`, boxShadow: t.cardShadow, display: "flex", flexDirection: "column", gap: 16 }}>
         <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.09, textTransform: "uppercase", color: t.mutedFaint }}>Widok gracza · tylko do odczytu</span>
 
-        {loading && <p style={{ margin: 0, fontSize: 13, color: t.muted }}>Ładowanie…</p>}
-        {!loading && notFound && (
+        {stage === "checking" && <p style={{ margin: 0, fontSize: 13, color: t.muted }}>Ładowanie…</p>}
+        {stage === "notfound" && (
           <p style={{ margin: 0, fontSize: 13, color: "#ff7a7a" }}>Nie znaleziono gracza. Link mógł wygasnąć albo gracz został usunięty.</p>
         )}
-        {!loading && !notFound && player && (
+        {stage === "setup" && (
+          <form onSubmit={submitSetup} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <span style={{ fontSize: 17, fontWeight: 800, color: t.textStrong }}>Ustaw PIN do tego linku</span>
+            <p style={{ margin: 0, fontSize: 12.5, color: t.muted, lineHeight: 1.5 }}>
+              To pierwsze użycie tego linku — wybierz PIN (min. 4 znaki). Przy każdym kolejnym wejściu będziesz go podawać.
+            </p>
+            <input autoFocus type="password" inputMode="numeric" placeholder="Nowy PIN" value={pinInput} onChange={(e) => { setPinInput(e.target.value); setPinError(""); }} style={pinInputStyle} />
+            <input type="password" inputMode="numeric" placeholder="Powtórz PIN" value={pinConfirmInput} onChange={(e) => { setPinConfirmInput(e.target.value); setPinError(""); }} style={pinInputStyle} />
+            {pinError && <p style={{ margin: 0, fontSize: 11.5, color: "#ff7a7a" }}>{pinError}</p>}
+            <GradientButton style={{ padding: "12px 0", fontSize: 13.5 }} disabled={pinBusy}>
+              {pinBusy ? "Zapisywanie…" : "Ustaw PIN i zobacz punkty"}
+            </GradientButton>
+          </form>
+        )}
+        {stage === "enter" && (
+          <form onSubmit={submitEnter} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <span style={{ fontSize: 17, fontWeight: 800, color: t.textStrong }}>Wpisz PIN</span>
+            <p style={{ margin: 0, fontSize: 12.5, color: t.muted, lineHeight: 1.5 }}>
+              Ten link jest zabezpieczony PIN-em, który ustawiłeś przy pierwszym wejściu.
+            </p>
+            <input autoFocus type="password" inputMode="numeric" placeholder="PIN" value={pinInput} onChange={(e) => { setPinInput(e.target.value); setPinError(""); }} style={pinInputStyle} />
+            {pinError && <p style={{ margin: 0, fontSize: 11.5, color: "#ff7a7a" }}>{pinError}</p>}
+            <GradientButton style={{ padding: "12px 0", fontSize: 13.5 }} disabled={pinBusy}>
+              {pinBusy ? "Sprawdzanie…" : "Potwierdź"}
+            </GradientButton>
+          </form>
+        )}
+        {stage === "unlocked" && player && (
           <>
             <span style={{ fontSize: 22, fontWeight: 800, color: t.textStrong, letterSpacing: -0.01 }}>{player.nick}</span>
             <Divider t={t} />
