@@ -377,6 +377,21 @@ zamieniany. Z bazy pobieranych jest najwyżej 1000 zmian z zakresu naraz —
 jeśli jest ich więcej, pod listą pojawia się informacja, żeby zawęzić
 daty. Nie wymaga migracji bazy.
 
+**Runda 29** — dwie zmiany w PIN-ie linku gracza z Rundy 28:
+- **PIN wpisuje się teraz klawiaturą numeryczną na ekranie** (układ jak w
+  bankomacie: 1-9, potem C / 0 / ⌫), nie z fizycznej klawiatury — wpisane
+  cyfry pokazują się jako kółka, bez odkrywania samych cyfr. Ustawianie
+  nowego PIN-u to teraz dwa kroki pod rząd (wpisz, potem powtórz) zamiast
+  dwóch pól na raz.
+- **Poprawka**: gdy coś nie działa technicznie (np. migracja bazy z
+  Rundy 28 jeszcze nie uruchomiona), link pokazywał mylące „Nie
+  znaleziono gracza" — teraz rozróżnia błąd techniczny od faktycznie
+  usuniętego gracza i pokazuje właściwy komunikat.
+
+Admin już wcześniej (Runda 28) mógł zresetować PIN gracza przyciskiem
+„Resetuj PIN" w panelu gracza — bez zmian. Nie wymaga migracji bazy (tylko
+front-end).
+
 **Runda 28** — cztery zmiany:
 - **Filtr „Od / Do" ma teraz też pola godzin** (opcjonalne) — zostawione
   puste dają stare zachowanie (cały dzień), wypełnione zawężają do

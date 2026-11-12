@@ -275,6 +275,56 @@ const PLAYER_HISTORY_PAGE = 5;
 const CATEGORY_HISTORY_PAGE = 50;
 // Przy filtrze dat pokazujemy cały zakres naraz — to górny bezpiecznik.
 const RANGE_FETCH_LIMIT = 1000;
+// PIN do "Linku dla gracza" (Runda 28) — wpisywany z klawiatury numerycznej
+// na ekranie (jak w bankomacie), nie z fizycznej klawiatury. Min. 4 cyfry,
+// górny limit tylko żeby ekran nie rósł w nieskończoność.
+const PIN_MIN_LEN = 4;
+const PIN_MAX_LEN = 8;
+
+// Klawiatura numeryczna w układzie bankomatowym: 1-9, potem C / 0 / ⌫.
+function PinKeypad({ onDigit, onBackspace, onClear, disabled, t }) {
+  const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "C", "0", "⌫"];
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+      {keys.map((k) => {
+        const isAction = k === "C" || k === "⌫";
+        return (
+          <button
+            key={k}
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              if (k === "C") onClear();
+              else if (k === "⌫") onBackspace();
+              else onDigit(k);
+            }}
+            style={{
+              padding: "15px 0", borderRadius: 12, fontFamily: MONO, fontSize: 18, fontWeight: 800,
+              cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1,
+              border: `1px solid ${t.ghostBorder}`,
+              background: isAction ? "transparent" : t.inputBg,
+              color: isAction ? t.muted : t.textStrong,
+            }}
+          >
+            {k}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Rząd kółek pokazujący, ile cyfr zostało już wpisanych — bez odkrywania
+// samych cyfr (tak jak na bankomacie).
+function PinDots({ length, t }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 10, minHeight: 16 }}>
+      {Array.from({ length }).map((_, i) => (
+        <span key={i} style={{ width: 14, height: 14, borderRadius: "50%", background: t.textStrong, flexShrink: 0 }} />
+      ))}
+    </div>
+  );
+}
 
 // Postgres unique_violation — used to show a friendly message instead of the
 // raw driver error, and to catch the case where two clients race to insert
@@ -2241,15 +2291,30 @@ function PlayerView({ playerId }) {
   const [player, setPlayer] = useState(null);
   const [events, setEvents] = useState([]);
   // "checking" (sprawdzamy, czy PIN jest ustawiony) -> "setup" (pierwsze
-  // użycie linku, gracz wybiera PIN) albo "enter" (PIN już jest, trzeba go
-  // podać) -> "unlocked" (PIN zgodny, dane widoczne). "notfound" gdy gracz
-  // nie istnieje.
+  // użycie linku, gracz wybiera PIN, dwa razy pod rząd) albo "enter" (PIN
+  // już jest, trzeba go podać) -> "unlocked" (PIN zgodny, dane widoczne).
+  // "notfound" gdy gracza faktycznie nie ma, "error" gdy coś nie zadziałało
+  // technicznie (np. migracja bazy jeszcze nie uruchomiona) — rozdzielone,
+  // żeby błąd techniczny nie wyglądał jak usunięty gracz.
   const [stage, setStage] = useState("checking");
   const [pin, setPin] = useState("");
-  const [pinInput, setPinInput] = useState("");
-  const [pinConfirmInput, setPinConfirmInput] = useState("");
+  // Flow ustawiania PIN-u ma dwa kroki: "first" (wpisz nowy PIN) i
+  // "confirm" (powtórz go) — jak przy ustawianiu PIN-u do karty.
+  const [setupPhase, setSetupPhase] = useState("first");
+  const [firstPin, setFirstPin] = useState("");
+  // Bufor aktualnie wpisywanych na klawiaturze cyfr (ani stage "enter", ani
+  // "setup" nie trzyma PIN-u we <input> — wpisuje się go wyłącznie
+  // klawiaturą numeryczną na ekranie, jak w bankomacie).
+  const [pinBuffer, setPinBuffer] = useState("");
   const [pinError, setPinError] = useState("");
   const [pinBusy, setPinBusy] = useState(false);
+
+  const pressDigit = (d) => {
+    setPinError("");
+    setPinBuffer((prev) => (prev.length >= PIN_MAX_LEN ? prev : prev + d));
+  };
+  const pressBackspace = () => { setPinError(""); setPinBuffer((prev) => prev.slice(0, -1)); };
+  const pressClear = () => { setPinError(""); setPinBuffer(""); };
 
   useEffect(() => {
     if (!supabase) return;
@@ -2259,8 +2324,9 @@ function PlayerView({ playerId }) {
     // pokazać, zanim o cokolwiek zapyta `player_public_view` niżej.
     supabase.rpc("player_link_pin_status", { p_player_id: playerId }).then(({ data, error }) => {
       if (cancelled) return;
-      if (error || data == null) setStage("notfound");
-      else setStage(data ? "enter" : "setup");
+      if (error) { setStage("error"); return; }
+      if (data == null) { setStage("notfound"); return; }
+      setStage(data ? "enter" : "setup");
     });
     return () => { cancelled = true; };
   }, [playerId]);
@@ -2277,12 +2343,13 @@ function PlayerView({ playerId }) {
     const { data, error } = await supabase.rpc("player_public_view", { p_player_id: playerId, p_pin: pinToTry });
     const row = Array.isArray(data) ? data[0] : data;
     if (error || !row) {
-      if (showSpinner) { setPinBusy(false); setPinError("Nie udało się połączyć. Spróbuj ponownie."); }
+      if (showSpinner) { setPinBusy(false); setPinError("Nie udało się połączyć. Spróbuj ponownie."); setPinBuffer(""); }
       return;
     }
     if (!row.pin_ok) {
       if (showSpinner) {
         setPinBusy(false);
+        setPinBuffer("");
         // Rzadki wyścig: kto inny zdążył ustawić PIN między sprawdzeniem
         // statusu a tym zgłoszeniem — przełącz z "setup" na "enter".
         if (row.pin_set && stage === "setup") {
@@ -2317,22 +2384,29 @@ function PlayerView({ playerId }) {
     return () => clearInterval(interval);
   }, [stage, pin]);
 
-  const submitSetup = (e) => {
-    e.preventDefault();
-    const value = pinInput.trim();
-    if (value.length < 4) { setPinError("PIN musi mieć co najmniej 4 znaki."); return; }
-    if (value !== pinConfirmInput.trim()) { setPinError("PIN-y się nie zgadzają."); return; }
-    unlock(value, { showSpinner: true });
+  const confirmSetup = () => {
+    if (pinBuffer.length < PIN_MIN_LEN) { setPinError(`PIN musi mieć co najmniej ${PIN_MIN_LEN} cyfry.`); return; }
+    if (setupPhase === "first") {
+      setFirstPin(pinBuffer);
+      setPinBuffer("");
+      setSetupPhase("confirm");
+      return;
+    }
+    // setupPhase === "confirm"
+    if (pinBuffer !== firstPin) {
+      setPinError("PIN-y się nie zgadzają — spróbuj jeszcze raz.");
+      setFirstPin("");
+      setPinBuffer("");
+      setSetupPhase("first");
+      return;
+    }
+    unlock(pinBuffer, { showSpinner: true });
   };
 
-  const submitEnter = (e) => {
-    e.preventDefault();
-    const value = pinInput.trim();
-    if (!value) { setPinError("Wpisz PIN."); return; }
-    unlock(value, { showSpinner: true });
+  const confirmEnter = () => {
+    if (!pinBuffer) { setPinError("Wpisz PIN."); return; }
+    unlock(pinBuffer, { showSpinner: true });
   };
-
-  const pinInputStyle = { boxSizing: "border-box", width: "100%", background: t.inputBg, border: `1px solid ${t.inputBorder}`, borderRadius: 10, color: t.textStrong, fontSize: 14, padding: "11px 13px", fontFamily: "inherit" };
 
   return (
     <div style={{ position: "relative", minHeight: "100vh", boxSizing: "border-box", padding: "44px 24px", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT, color: t.text, background: t.pageBg, overflow: "hidden" }}>
@@ -2348,32 +2422,42 @@ function PlayerView({ playerId }) {
         {stage === "notfound" && (
           <p style={{ margin: 0, fontSize: 13, color: "#ff7a7a" }}>Nie znaleziono gracza. Link mógł wygasnąć albo gracz został usunięty.</p>
         )}
+        {stage === "error" && (
+          <p style={{ margin: 0, fontSize: 13, color: "#ff7a7a" }}>
+            Wystąpił błąd techniczny po stronie serwera. Jeśli administrator właśnie wgrał aktualizację, może jeszcze nie być gotowa — spróbuj odświeżyć stronę za chwilę.
+          </p>
+        )}
         {stage === "setup" && (
-          <form onSubmit={submitSetup} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <span style={{ fontSize: 17, fontWeight: 800, color: t.textStrong }}>Ustaw PIN do tego linku</span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <span style={{ fontSize: 17, fontWeight: 800, color: t.textStrong }}>
+              {setupPhase === "first" ? "Ustaw PIN do tego linku" : "Powtórz PIN"}
+            </span>
             <p style={{ margin: 0, fontSize: 12.5, color: t.muted, lineHeight: 1.5 }}>
-              To pierwsze użycie tego linku — wybierz PIN (min. 4 znaki). Przy każdym kolejnym wejściu będziesz go podawać.
+              {setupPhase === "first"
+                ? `To pierwsze użycie tego linku — wybierz PIN (min. ${PIN_MIN_LEN} cyfry) klawiaturą poniżej. Przy każdym kolejnym wejściu będziesz go podawać.`
+                : "Wpisz ten sam PIN jeszcze raz, żeby się upewnić, że się nie pomyliłeś."}
             </p>
-            <input autoFocus type="password" inputMode="numeric" placeholder="Nowy PIN" value={pinInput} onChange={(e) => { setPinInput(e.target.value); setPinError(""); }} style={pinInputStyle} />
-            <input type="password" inputMode="numeric" placeholder="Powtórz PIN" value={pinConfirmInput} onChange={(e) => { setPinConfirmInput(e.target.value); setPinError(""); }} style={pinInputStyle} />
-            {pinError && <p style={{ margin: 0, fontSize: 11.5, color: "#ff7a7a" }}>{pinError}</p>}
-            <GradientButton style={{ padding: "12px 0", fontSize: 13.5 }} disabled={pinBusy}>
-              {pinBusy ? "Zapisywanie…" : "Ustaw PIN i zobacz punkty"}
+            <PinDots length={pinBuffer.length} t={t} />
+            {pinError && <p style={{ margin: 0, fontSize: 11.5, color: "#ff7a7a", textAlign: "center" }}>{pinError}</p>}
+            <PinKeypad onDigit={pressDigit} onBackspace={pressBackspace} onClear={pressClear} disabled={pinBusy} t={t} />
+            <GradientButton onClick={confirmSetup} style={{ padding: "12px 0", fontSize: 13.5 }} disabled={pinBusy}>
+              {pinBusy ? "Zapisywanie…" : setupPhase === "first" ? "Dalej" : "Ustaw PIN i zobacz punkty"}
             </GradientButton>
-          </form>
+          </div>
         )}
         {stage === "enter" && (
-          <form onSubmit={submitEnter} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <span style={{ fontSize: 17, fontWeight: 800, color: t.textStrong }}>Wpisz PIN</span>
             <p style={{ margin: 0, fontSize: 12.5, color: t.muted, lineHeight: 1.5 }}>
               Ten link jest zabezpieczony PIN-em, który ustawiłeś przy pierwszym wejściu.
             </p>
-            <input autoFocus type="password" inputMode="numeric" placeholder="PIN" value={pinInput} onChange={(e) => { setPinInput(e.target.value); setPinError(""); }} style={pinInputStyle} />
-            {pinError && <p style={{ margin: 0, fontSize: 11.5, color: "#ff7a7a" }}>{pinError}</p>}
-            <GradientButton style={{ padding: "12px 0", fontSize: 13.5 }} disabled={pinBusy}>
+            <PinDots length={pinBuffer.length} t={t} />
+            {pinError && <p style={{ margin: 0, fontSize: 11.5, color: "#ff7a7a", textAlign: "center" }}>{pinError}</p>}
+            <PinKeypad onDigit={pressDigit} onBackspace={pressBackspace} onClear={pressClear} disabled={pinBusy} t={t} />
+            <GradientButton onClick={confirmEnter} style={{ padding: "12px 0", fontSize: 13.5 }} disabled={pinBusy}>
               {pinBusy ? "Sprawdzanie…" : "Potwierdź"}
             </GradientButton>
-          </form>
+          </div>
         )}
         {stage === "unlocked" && player && (
           <>
