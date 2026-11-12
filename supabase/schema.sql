@@ -397,10 +397,18 @@ begin
       case when ok then p.bilety_nick end,
       case when ok then (
         select coalesce(json_agg(e), '[]'::json) from (
-          select id, category, delta, created_by, comment, created_at
-          from point_events
-          where player_id = p.id
-          order by created_at desc
+          -- Kolumna `id` MUSI być tu jawnie zakwalifikowana (`pe.id`, nie
+          -- samo `id`) — ta funkcja jest teraz `language plpgsql` (Runda
+          -- 28, potrzebna do logiki PIN-u), a PL/pgSQL myli gołe `id` z
+          -- nazwą tej samej kolumny zwracanej przez samą funkcję
+          -- (`returns table(id uuid, ...)`), co kończy się błędem 42702
+          -- "column reference id is ambiguous" przy KAŻDYM wywołaniu tej
+          -- funkcji. Sama funkcja `language sql` sprzed Rundy 28 nie miała
+          -- tego problemu — to rozróżnienie jest specyficzne dla plpgsql.
+          select pe.id, pe.category, pe.delta, pe.created_by, pe.comment, pe.created_at
+          from point_events pe
+          where pe.player_id = p.id
+          order by pe.created_at desc
           limit 100
         ) e
       ) end as events,
