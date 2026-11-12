@@ -283,16 +283,25 @@ const PIN_MAX_LEN = 8;
 
 // Klawiatura numeryczna w układzie bankomatowym: 1-9, potem C / 0 / ⌫.
 function PinKeypad({ onDigit, onBackspace, onClear, disabled, t }) {
+  // Efekt wciśnięcia (lekkie zmniejszenie + podświetlenie) — śledzony przez
+  // pointerDown/Up/Leave, bo to inline style, nie CSS :active. pointerLeave
+  // czyści tylko "swój" klawisz, żeby szybkie przesunięcie kursora między
+  // przyciskami nie zgasiło podświetlenia tego, na którym kursor już jest.
+  const [activeKey, setActiveKey] = useState(null);
   const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "C", "0", "⌫"];
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
       {keys.map((k) => {
         const isAction = k === "C" || k === "⌫";
+        const isActive = activeKey === k && !disabled;
         return (
           <button
             key={k}
             type="button"
             disabled={disabled}
+            onPointerDown={() => setActiveKey(k)}
+            onPointerUp={() => setActiveKey(null)}
+            onPointerLeave={() => setActiveKey((prev) => (prev === k ? null : prev))}
             onClick={() => {
               if (k === "C") onClear();
               else if (k === "⌫") onBackspace();
@@ -301,9 +310,11 @@ function PinKeypad({ onDigit, onBackspace, onClear, disabled, t }) {
             style={{
               padding: "15px 0", borderRadius: 12, fontFamily: MONO, fontSize: 18, fontWeight: 800,
               cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1,
-              border: `1px solid ${t.ghostBorder}`,
-              background: isAction ? "transparent" : t.inputBg,
+              border: `1px solid ${isActive ? t.ghostBorderHover : t.ghostBorder}`,
+              background: isActive ? "rgba(255,255,255,.16)" : (isAction ? "transparent" : t.inputBg),
               color: isAction ? t.muted : t.textStrong,
+              transform: isActive ? "scale(0.93)" : "scale(1)",
+              transition: "transform .08s ease, background .08s ease, border-color .08s ease",
             }}
           >
             {k}
