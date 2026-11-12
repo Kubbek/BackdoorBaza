@@ -1189,6 +1189,28 @@ function OrganizerApp() {
     setEvents([]);
   };
 
+  // Automatyczne wylogowanie po godzinie BEZCZYNNOŚCI (nie sztywno godzinę
+  // od zalogowania — licznik resetuje się przy każdym kliknięciu/wciśnięciu
+  // klawisza/dotknięciu, więc aktywna praca nigdy nie zostaje przerwana
+  // w pół, a zapomniana otwarta karta wyloguje się sama). Obejmuje
+  // CAŁOŚĆ — zarówno konto, jak i odblokowany Klub — dokładnie to samo,
+  // co zwykłe ręczne "Wyloguj".
+  useEffect(() => {
+    if (!account) return;
+    const AUTO_LOGOUT_MS = 60 * 60 * 1000;
+    let timer = setTimeout(logout, AUTO_LOGOUT_MS);
+    const resetTimer = () => {
+      clearTimeout(timer);
+      timer = setTimeout(logout, AUTO_LOGOUT_MS);
+    };
+    const activityEvents = ["click", "keydown", "pointerdown", "touchstart"];
+    activityEvents.forEach((ev) => window.addEventListener(ev, resetTimer));
+    return () => {
+      clearTimeout(timer);
+      activityEvents.forEach((ev) => window.removeEventListener(ev, resetTimer));
+    };
+  }, [account]);
+
   // ---- nawigacja: 2 sekcje (Bilety/Klub) -> (dla Klubu) 3 podkategorie ----
   const openSection = (key) => {
     if (key === "bilety") {
