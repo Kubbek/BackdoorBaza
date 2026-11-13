@@ -166,6 +166,23 @@ function effectiveNick(player, category) {
   return (category && player[category + "Nick"]) || player.nick;
 }
 
+// Nicki, pod jakimi ten sam gracz występuje w INNYCH widocznych
+// kategoriach, jeśli różnią się od tego, co jest akurat wyświetlane
+// (Runda 35) — np. gracz ma w Bar nadpisany nick "Jasiu", a w aktualnie
+// otwartej kategorii widać go jako "Jan Kowalski": zwraca ["Jasiu"].
+// Zduplikowane/takie same nicki w kilku innych kategoriach pokazują się
+// tylko raz. Używane przy głównym nicku gracza w liście/siatce, żeby od
+// razu było widać, że to ta sama osoba pod inną nazwą gdzie indziej.
+function otherNicks(player, category) {
+  const currentNick = effectiveNick(player, category);
+  return [...new Set(
+    Object.keys(VISIBLE_CATS)
+      .filter((key) => key !== category)
+      .map((key) => effectiveNick(player, key))
+      .filter((nick) => nick !== currentNick)
+  )];
+}
+
 function resolveAmount(raw) {
   const n = parseInt(raw, 10);
   // 0 (pole zresetowane po poprzedniej zmianie) albo puste pole = brak
@@ -2231,7 +2248,12 @@ function OrganizerApp() {
                           <span style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                             <span style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
                               <span style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: t.mutedFaint, minWidth: 20, textAlign: "right" }}>{i + 1}</span>
-                              <span style={{ fontSize: 14.5, fontWeight: 700, color: t.textStrong, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{effectiveNick(p, category)}</span>
+                              <span style={{ fontSize: 14.5, fontWeight: 700, color: t.textStrong, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {effectiveNick(p, category)}
+                                {otherNicks(p, category).length > 0 && (
+                                  <span style={{ fontWeight: 600, color: t.mutedFaint }}> ({otherNicks(p, category).join(", ")})</span>
+                                )}
+                              </span>
                             </span>
                             <span style={{ fontFamily: MONO, fontSize: 19, fontWeight: 800, color: t.textStrong, flexShrink: 0 }}>
                               {p[category]}
@@ -2275,7 +2297,12 @@ function OrganizerApp() {
                             display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 10,
                           }}
                         >
-                          <span style={{ position: "relative", fontSize: 13, fontWeight: 700, color: t.textStrong, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{effectiveNick(p, category)}</span>
+                          <span style={{ position: "relative", fontSize: 13, fontWeight: 700, color: t.textStrong, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {effectiveNick(p, category)}
+                            {otherNicks(p, category).length > 0 && (
+                              <span style={{ fontWeight: 600, color: t.mutedFaint }}> ({otherNicks(p, category).join(", ")})</span>
+                            )}
+                          </span>
                           <span style={{ position: "relative", fontFamily: MONO, fontSize: 19, fontWeight: 700, color: t.textStrong }}>
                             {p[category]}
                             {p[category + "Limit"] != null && (

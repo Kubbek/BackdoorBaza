@@ -377,6 +377,12 @@ zamieniany. Z bazy pobieranych jest najwyżej 1000 zmian z zakresu naraz —
 jeśli jest ich więcej, pod listą pojawia się informacja, żeby zawęzić
 daty. Nie wymaga migracji bazy.
 
+**Runda 35** — jeśli gracz ma w innej, widocznej kategorii nadpisany nick
+różniący się od tego, co widać akurat w otwartej kategorii (np. w Bar
+nazywa się "Jasiu", a tu "Jan Kowalski"), obok głównego nicku w liście i
+siatce pojawia się to w nawiasie: **„Jan Kowalski (Jasiu)"**. Pokazuje
+wszystkie różne nazwy naraz, bez duplikatów. Nie wymaga migracji bazy.
+
 **Runda 34** — w liście i siatce graczy, pod głównym nickiem/sumą,
 pojawia się teraz mały wiersz z punktami tego gracza w **pozostałych
 widocznych kategoriach** (np. będąc w Bar widać od razu też Bilety i
