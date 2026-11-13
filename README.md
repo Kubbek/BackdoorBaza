@@ -377,6 +377,14 @@ zamieniany. Z bazy pobieranych jest najwyżej 1000 zmian z zakresu naraz —
 jeśli jest ich więcej, pod listą pojawia się informacja, żeby zawęzić
 daty. Nie wymaga migracji bazy.
 
+**Runda 32** — naprawiony zgłoszony przypadek: urządzenie straciło na
+chwilę połączenie (zanik Wi-Fi, uśpienie laptopa/telefonu), kanał
+Realtime się rozłączył, a po powrocie internetu aplikacja nie wiedziała,
+że coś przegapiła — stare dane wisiały na ekranie, dopóki ktoś ręcznie nie
+odświeżył/przelogował się. Teraz aplikacja sama cicho dociąga świeże dane
+z bazy w dwóch momentach: gdy karta wraca na pierwszy plan i gdy Realtime
+łączy się ponownie po rozłączeniu. Nie wymaga migracji bazy.
+
 **Runda 31** — sekcja **Live schowana z interfejsu** (i z administracji, i
 z publicznego linku gracza) — ekran wyboru kategorii w Klubie pokazuje
 teraz tylko Club i Bar. Dane graczy w kategorii Live (punkty, historia,
