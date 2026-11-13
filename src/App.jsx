@@ -930,23 +930,41 @@ function OrganizerApp() {
     if (!supabase || !account) return;
     let cancelled = false;
 
-    async function load() {
-      setLoading(true);
+    async function load(showSpinner) {
+      if (showSpinner) setLoading(true);
       const [{ data: playerRows, error: pErr }, { data: eventRows, error: eErr }] = await Promise.all([
         supabase.from("players").select("*").order("nick"),
         supabase.from("point_events").select("*").order("created_at", { ascending: false }).limit(500),
       ]);
       if (cancelled) return;
       if (pErr || eErr) {
-        setLoadError((pErr || eErr).message);
+        if (showSpinner) setLoadError((pErr || eErr).message);
+        // Przy cichym doładowaniu w tle (patrz niżej) błąd połączenia nie
+        // jest niczym niezwykłym — po prostu spróbujemy przy następnej
+        // okazji, zamiast zasłaniać cały ekran czerwonym komunikatem.
       } else {
         setPlayers(playerRows.map(rowFromDb));
         setEvents(eventRows.map(eventFromDb));
+        setLoadError("");
       }
-      setLoading(false);
+      if (showSpinner) setLoading(false);
     }
-    load();
+    load(true);
 
+    // Zgłoszony przypadek: urządzenie straciło na chwilę połączenie
+    // (Wi-Fi, usypianie laptopa/telefonu), Realtime się rozłączył, a po
+    // powrocie sieci klient nie wiedział, że coś przegapił — stare dane
+    // wisiały na ekranie, dopóki ktoś ręcznie nie odświeżył/przelogował
+    // się. Oba poniższe haki łapią dokładnie ten moment i dociągają
+    // świeże dane z bazy po cichu (bez pokazywania spinnera), zamiast
+    // czekać na ręczną interwencję:
+    // 1. karta wraca na pierwszy plan (np. telefon/laptop się obudził),
+    // 2. kanał Realtime łączy się PONOWNIE po rozłączeniu (nie przy
+    //    pierwszym połączeniu — `hasSubscribedOnce` to odróżnia).
+    const onVisible = () => { if (document.visibilityState === "visible") load(false); };
+    document.addEventListener("visibilitychange", onVisible);
+
+    let hasSubscribedOnce = false;
     const channel = supabase
       .channel("poker-ranking-sync")
       .on("postgres_changes", { event: "*", schema: "public", table: "players" }, (payload) => {
@@ -969,10 +987,15 @@ function OrganizerApp() {
         const row = eventFromDb(payload.new);
         setEvents((prev) => (prev.some((e) => e.id === row.id) ? prev : [row, ...prev]));
       })
-      .subscribe();
+      .subscribe((status) => {
+        if (status !== "SUBSCRIBED") return;
+        if (hasSubscribedOnce) load(false);
+        hasSubscribedOnce = true;
+      });
 
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
       supabase.removeChannel(channel);
     };
   }, [account]);
