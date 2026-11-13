@@ -377,6 +377,20 @@ zamieniany. Z bazy pobieranych jest najwyżej 1000 zmian z zakresu naraz —
 jeśli jest ich więcej, pod listą pojawia się informacja, żeby zawęzić
 daty. Nie wymaga migracji bazy.
 
+**Runda 34** — w liście i siatce graczy, pod głównym nickiem/sumą,
+pojawia się teraz mały wiersz z punktami tego gracza w **pozostałych
+widocznych kategoriach** (np. będąc w Bar widać od razu też Bilety i
+Club) — bez klikania w każdego gracza z osobna. Live, zgodnie z Rundą 31,
+nie jest tu pokazywane. Nie wymaga migracji bazy.
+
+**Runda 33** — trzecia, niezależna od przyczyny warstwa dosynchronizowania
+danych: oprócz odświeżania przy powrocie karty i ponownym połączeniu
+Realtime (Runda 32), aplikacja teraz cyklicznie, po cichu doładowuje dane
+z bazy co 30 sekund — niezależnie od tego, czy karta/Realtime w ogóle
+zauważyły problem z połączeniem. Samo-naprawia stan nawet przy
+przyczynach, których nie da się łatwo wykryć (np. "zombie" połączenie
+WebSocket). Nie wymaga migracji bazy.
+
 **Runda 32** — naprawiony zgłoszony przypadek: urządzenie straciło na
 chwilę połączenie (zanik Wi-Fi, uśpienie laptopa/telefonu), kanał
 Realtime się rozłączył, a po powrocie internetu aplikacja nie wiedziała,

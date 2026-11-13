@@ -55,13 +55,32 @@ const CATS = {
     glow: "rgba(245,158,11,.7)",
   },
 };
-// Podkategorie widoczne wyłącznie wewnątrz Klubu (czyli CATS bez "bilety").
-// "live" jest tu też wykluczone (Runda 31) — sekcja Live jest schowana z
-// interfejsu na życzenie, ale CELOWO NIE usunięta z samego obiektu CATS
-// ani z bazy danych: dane graczy (punkty, historia, limity, nicki) w tej
-// kategorii zostają nietknięte, więc łatwo ją przywrócić w przyszłości —
-// wystarczy usunąć "live" z filtra poniżej.
-const KLUB_CATS = Object.fromEntries(Object.entries(CATS).filter(([key]) => key !== "bilety" && key !== "live"));
+// CATS bez "live" (Runda 31) — sekcja Live jest schowana z interfejsu na
+// życzenie, ale CELOWO NIE usunięta z samego obiektu CATS ani z bazy
+// danych: dane graczy (punkty, historia, limity, nicki) w tej kategorii
+// zostają nietknięte, więc łatwo ją przywrócić w przyszłości — wystarczy
+// usunąć "live" z filtra poniżej. Wszystko, co ma pokazywać "kategorie
+// widoczne w aplikacji", powinno filtrować przez VISIBLE_CATS, nie samo
+// CATS, żeby Live nie wyciekło z powrotem do interfejsu przez przeoczenie.
+const VISIBLE_CATS = Object.fromEntries(Object.entries(CATS).filter(([key]) => key !== "live"));
+// Podkategorie widoczne wyłącznie wewnątrz Klubu (czyli VISIBLE_CATS bez "bilety").
+const KLUB_CATS = Object.fromEntries(Object.entries(VISIBLE_CATS).filter(([key]) => key !== "bilety"));
+
+// Punkty gracza w POZOSTAŁYCH widocznych kategoriach (Runda 34) — mały,
+// stonowany wiersz pod głównym nickiem/sumą w liście/siatce graczy, żeby
+// organizator od razu widział, ile gracz ma gdzie indziej, bez klikania
+// w każdego z osobna.
+function OtherCategoriesLine({ player, category, t }) {
+  const others = Object.entries(VISIBLE_CATS).filter(([key]) => key !== category);
+  if (others.length === 0) return null;
+  return (
+    <span style={{ display: "flex", gap: 10, flexWrap: "wrap", fontFamily: MONO, fontSize: 10.5, color: t.mutedFaint }}>
+      {others.map(([key, c]) => (
+        <span key={key}>{c.short}: {player[key]}</span>
+      ))}
+    </span>
+  );
+}
 
 // Tło ekranu kategorii (te trzy rozmyte plamy światła za kartą) dostraja
 // się do koloru aktualnej kategorii, żeby od razu było widać, w której
@@ -2206,19 +2225,22 @@ function OrganizerApp() {
                             position: "relative", overflow: "hidden", width: "100%", textAlign: "left", cursor: "pointer",
                             borderRadius: 12, padding: "13px 15px", fontFamily: "inherit",
                             background: heatColor(ratio, t), border: `1px solid ${active ? ACCENT : t.cardBorder}`,
-                            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+                            display: "flex", flexDirection: "column", gap: 4,
                           }}
                         >
-                          <span style={{ position: "relative", display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-                            <span style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: t.mutedFaint, minWidth: 20, textAlign: "right" }}>{i + 1}</span>
-                            <span style={{ fontSize: 14.5, fontWeight: 700, color: t.textStrong, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{effectiveNick(p, category)}</span>
+                          <span style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                            <span style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                              <span style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: t.mutedFaint, minWidth: 20, textAlign: "right" }}>{i + 1}</span>
+                              <span style={{ fontSize: 14.5, fontWeight: 700, color: t.textStrong, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{effectiveNick(p, category)}</span>
+                            </span>
+                            <span style={{ fontFamily: MONO, fontSize: 19, fontWeight: 800, color: t.textStrong, flexShrink: 0 }}>
+                              {p[category]}
+                              {p[category + "Limit"] != null && (
+                                <span style={{ fontSize: 12, fontWeight: 700, color: t.mutedFaint, marginLeft: 4 }}>(-{p[category + "Limit"]})</span>
+                              )}
+                            </span>
                           </span>
-                          <span style={{ position: "relative", fontFamily: MONO, fontSize: 19, fontWeight: 800, color: t.textStrong }}>
-                            {p[category]}
-                            {p[category + "Limit"] != null && (
-                              <span style={{ fontSize: 12, fontWeight: 700, color: t.mutedFaint, marginLeft: 4 }}>(-{p[category + "Limit"]})</span>
-                            )}
-                          </span>
+                          <OtherCategoriesLine player={p} category={category} t={t} />
                         </button>
                         {active && (
                           <PlayerPanel
@@ -2260,6 +2282,7 @@ function OrganizerApp() {
                               <span style={{ fontSize: 12, fontWeight: 700, color: t.mutedFaint, marginLeft: 4 }}>(-{p[category + "Limit"]})</span>
                             )}
                           </span>
+                          <OtherCategoriesLine player={p} category={category} t={t} />
                         </button>
                         {active && (
                           <div style={{ gridColumn: "1 / -1" }}>
@@ -2541,7 +2564,7 @@ function PlayerView({ playerId }) {
             <span style={{ fontSize: 22, fontWeight: 800, color: t.textStrong, letterSpacing: -0.01 }}>{player.nick}</span>
             <Divider t={t} />
             <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-              {Object.entries(CATS).filter(([key]) => key !== "live").map(([key, c]) => (
+              {Object.entries(VISIBLE_CATS).map(([key, c]) => (
                 <div key={key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderRadius: 12, padding: "13px 15px", background: c.tile, border: `1px solid ${t.cardBorder}` }}>
                   <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                     <span style={{ fontSize: 13.5, fontWeight: 700, color: t.textStrong }}>{c.label}</span>
