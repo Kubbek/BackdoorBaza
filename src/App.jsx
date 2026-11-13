@@ -964,6 +964,16 @@ function OrganizerApp() {
     const onVisible = () => { if (document.visibilityState === "visible") load(false); };
     document.addEventListener("visibilitychange", onVisible);
 
+    // Trzecia, niezależna od przyczyny warstwa: cykliczne, ciche
+    // doładowanie co 30s, NIEZALEŻNIE od tego, czy karta/Realtime w ogóle
+    // zauważyły problem. Zdarzenie zgłoszone przez organizatora (gracz
+    // widział nieaktualną sumę godzinami, mimo że dane w bazie były cały
+    // czas poprawne) mogło mieć inną przyczynę niż krótki zanik sieci —
+    // ten interwał samo-naprawia stan niezależnie od tego, CO dokładnie
+    // poszło nie tak (w tym "zombie" połączenie WebSocket, którego klient
+    // nie wykrywa jako rozłączonego).
+    const pollInterval = setInterval(() => load(false), 30000);
+
     let hasSubscribedOnce = false;
     const channel = supabase
       .channel("poker-ranking-sync")
@@ -996,6 +1006,7 @@ function OrganizerApp() {
     return () => {
       cancelled = true;
       document.removeEventListener("visibilitychange", onVisible);
+      clearInterval(pollInterval);
       supabase.removeChannel(channel);
     };
   }, [account]);
